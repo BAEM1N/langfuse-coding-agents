@@ -38,14 +38,27 @@ git clone https://github.com/BAEM1N/langfuse-coding-agents.git
 cd langfuse-coding-agents
 ```
 
-### Step 3 — run the installer for the user's tool
+### Step 3 — interview the user for Langfuse credentials
+
+**Do not run `install.sh` directly via the Bash tool.** The installer uses `read -rp` prompts that will hang under a non-interactive agent shell. Instead, conduct a short interview yourself (chat UI / clarifying questions / `AskUserQuestion`), collect the four values, then drive the install non-interactively (Step 5 below).
+
+Interview script — ask the user, one question at a time, in this order:
+
+1. **Langfuse Public Key** — `"What's your Langfuse public key? (starts with pk-lf-...)"`
+2. **Langfuse Secret Key** — `"And the secret key? (sk-lf-..., treat as a password — I'll write it to ~/.<tool>/.env with mode 600 equivalent and won't echo it back)"`
+3. **Langfuse Base URL** — `"Are you using Langfuse Cloud (https://cloud.langfuse.com) or a self-hosted instance? If self-hosted, paste the URL."`
+4. **User ID** — `"What username/identifier should traces be attributed to? This shows up in the Langfuse UI as the trace user — typical patterns are a personal handle (e.g. 'alice') or a per-tool variant (e.g. 'alice-opencode' for segmentation)."`
+
+Before asking, check if values already exist locally so you can offer them as defaults instead of re-asking. Likely sources:
 
 ```bash
-cd tools/<tool>          # one of: claude-code, codex, oh-my-codex, opencode, gemini-cli
-bash install.sh          # Windows: ./install.ps1
+# look for existing Langfuse creds the user already configured for another tool
+for f in ~/.claude/.env ~/.codex/.env ~/.omx/.env ~/.config/opencode/.env ~/.gemini/.env; do
+  [ -f "$f" ] && echo "--- $f ---" && grep -E "LANGFUSE_(PUBLIC_KEY|SECRET_KEY|BASE_URL|USER_ID)=" "$f"
+done
 ```
 
-Each installer is interactive: it asks for `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, and `LANGFUSE_USER_ID`. If the user has these in an env file already, surface them in the prompt rather than asking again.
+If you find values, present them as defaults (`"I see you already have pk-lf-38bb… configured for claude-code — reuse it for <new tool>? [Y/n]"`) rather than re-interviewing.
 
 ### Step 4 — credentials
 
@@ -71,7 +84,49 @@ LANGFUSE_USER_ID=<arbitrary string for trace attribution>
 
 **Precedence rule (important)**: the hook reads `os.environ` first, then falls back to the tool's `.env`. If a parent shell already exports `LANGFUSE_USER_ID=alice`, the per-tool `.env` value is ignored. For per-tool user segmentation (e.g. `BAEM1N-opencode` vs `BAEM1N-gemini`), instruct the user to `unset LANGFUSE_USER_ID` in the shell that launches the tool, or to override explicitly when invoking the tool.
 
-### Step 5 — verify
+### Step 5 — non-interactive install
+
+With the four values in hand, drive the install directly instead of running `install.sh` (which would hang on `read -rp`). The pattern is identical for every tool — `<tool>` is one of `claude-code`, `codex`, `oh-my-codex`, `opencode`, `gemini-cli`:
+
+```bash
+# 1. install Python SDK
+python3 -m pip install --upgrade "langfuse>=4.0"
+
+# 2. copy hook + create state dir (paths per tool — see Step 4 table)
+TOOL=<tool>
+case "$TOOL" in
+  claude-code)   DIR=~/.claude ;;
+  codex)         DIR=~/.codex ;;
+  oh-my-codex)   DIR=~/.omx ;;
+  opencode)      DIR=~/.config/opencode ;;
+  gemini-cli)    DIR=~/.gemini ;;
+esac
+mkdir -p "$DIR/hooks" "$DIR/state"
+cp tools/$TOOL/langfuse_hook.py "$DIR/hooks/langfuse_hook.py"
+chmod +x "$DIR/hooks/langfuse_hook.py"
+
+# 3. write .env (use the values you collected in Step 3)
+cat > "$DIR/.env" <<EOF
+TRACE_TO_LANGFUSE=true
+LANGFUSE_PUBLIC_KEY=$PK
+LANGFUSE_SECRET_KEY=$SK
+LANGFUSE_BASE_URL=$URL
+LANGFUSE_USER_ID=$UID
+EOF
+chmod 600 "$DIR/.env"
+
+# 4. register the hook with the host tool — tool-specific:
+#    - claude-code   → merge into ~/.claude/settings.json   (hooks.Stop / Notification / PreToolUse / PostToolUse)
+#    - codex         → merge into ~/.codex/hooks.json       (6 events listed earlier)
+#    - oh-my-codex   → also copy codex-native-bridge.py to ~/.omx/hooks/ and merge hooks.json
+#    - opencode      → append plugin URI to ~/.config/opencode/opencode.json's "plugin" array
+#                     and copy langfuse_plugin.js to ~/.config/opencode/plugins/
+#    - gemini-cli    → merge into ~/.gemini/settings.json   (11 events)
+```
+
+Each tool's installer contains a `python3 - <<PYEOF ... PYEOF` merge block for step 4 — extract that block and run it directly. **Never overwrite the user's existing settings file**; always merge so other hooks, plugins, MCP servers, etc. are preserved.
+
+### Step 6 — verify
 
 After running the tool once, traces should appear at `${LANGFUSE_BASE_URL}/traces`. The hooks also write a local log; useful when debugging:
 
@@ -141,6 +196,7 @@ The shim is opt-in: it only activates when the installed SDK lacks `update_curre
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| Install hangs forever on `Langfuse Public Key  :` prompt | Agent ran `install.sh` directly under non-interactive shell | Kill it, follow Step 3 (interview the user) + Step 5 (non-interactive install) instead. |
 | Hook log shows `Processed in X.Xs` but Langfuse has no trace for that session | SDK 4.x AttributeError silently swallowed | Confirm `langfuse_hook.py` contains `start_as_current_observation` AND `_Langfuse_class_for_compat` shim; if not, re-sync from monorepo. |
 | Traces arrive without `session_id` / `user_id` / `tags` | `update_current_trace` no-oping on SDK 4.x without the shim | Same fix as above. |
 | Trace `userId` is wrong per-tool | Shell env `LANGFUSE_USER_ID` shadows the tool's `.env` | `unset LANGFUSE_USER_ID` in the launching shell or override at invocation. |
