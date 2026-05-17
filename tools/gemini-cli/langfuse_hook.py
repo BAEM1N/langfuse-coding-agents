@@ -34,6 +34,64 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+
+# ---------------------------------------------------------------------------
+# Langfuse SDK 4.x compatibility shim
+# In Langfuse 4.x the `Langfuse.update_current_trace` method was removed in
+# favor of the module-level `propagate_attributes()` context manager. This
+# shim restores `update_current_trace` so existing hook code that calls
+# `client.update_current_trace(...)` keeps emitting trace-level attributes
+# (session_id, user_id, tags, trace_name, metadata). Older SDKs already have
+# the native method and are left untouched.
+# ---------------------------------------------------------------------------
+try:  # pragma: no cover - executes once at import time
+    from langfuse import Langfuse as _Langfuse_class_for_compat  # type: ignore
+    from langfuse import propagate_attributes as _lf_propagate_attributes  # type: ignore
+
+    if not hasattr(_Langfuse_class_for_compat, "update_current_trace"):
+        def _v4_update_current_trace_shim(  # type: ignore[no-redef]
+            self,
+            *,
+            name=None,
+            session_id=None,
+            user_id=None,
+            tags=None,
+            metadata=None,
+            version=None,
+            **_kwargs,
+        ):
+            filtered_meta = None
+            if metadata and isinstance(metadata, dict):
+                tmp = {}
+                for k, v in metadata.items():
+                    if not isinstance(k, str):
+                        continue
+                    key = k[:200]
+                    if isinstance(v, str):
+                        tmp[key] = v[:200]
+                    elif isinstance(v, (int, float, bool)):
+                        tmp[key] = str(v)[:200]
+                if tmp:
+                    filtered_meta = tmp
+            try:
+                cm = _lf_propagate_attributes(
+                    session_id=session_id if isinstance(session_id, str) else None,
+                    user_id=user_id if isinstance(user_id, str) else None,
+                    tags=tags if isinstance(tags, list) else None,
+                    trace_name=name if isinstance(name, str) else None,
+                    metadata=filtered_meta,
+                    version=version if isinstance(version, str) else None,
+                )
+                cm.__enter__()
+                cm.__exit__(None, None, None)
+            except Exception:
+                pass
+
+        _Langfuse_class_for_compat.update_current_trace = _v4_update_current_trace_shim
+except Exception:
+    pass
+# ---------------------------------------------------------------------------
+
 # --- Load .env file (fail-open, no dependencies) ---
 def _load_dotenv() -> None:
     """Load user-level .env file from ~/.gemini/.env into os.environ.
