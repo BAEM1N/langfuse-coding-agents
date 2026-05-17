@@ -17,3 +17,4 @@ The full setup guide and per-tool procedures live in **[AGENTS.md](./AGENTS.md)*
 - Per-tool `AGENTS.md` files (`tools/<tool>/AGENTS.md`) take precedence over this root file when working inside that subdirectory.
 - The `docs/` folder contains the hook event matrix — consult it before claiming "X tool doesn't capture event Y."
 - All five tools' hooks are intentionally near-duplicate Python files. Cross-tool patches (e.g. the SDK 4.x migration) are applied uniformly to all five — when you patch one, patch all five.
+- **No silent package-manager calls.** Detect Python / pip / langfuse availability and `pip install` the SDK if missing, but for system-level installs (Python itself, `uv`, OS packages) hand the one-liner to the user and wait — a tracing hook auto-running `brew install` or `apt install` reads as a supply-chain backdoor. See *Step 1* in [AGENTS.md](./AGENTS.md).
