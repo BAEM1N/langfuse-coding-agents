@@ -577,14 +577,14 @@ def emit_turn(
                 trace_name=f"Claude Code - Turn {turn_num} (incomplete)",
                 tags=["claude-code", "incomplete", hostname],
             ):
-                with langfuse.start_as_current_span(
+                with langfuse.start_as_current_observation(as_type="span", 
                     name=f"Claude Code - Turn {turn_num} (incomplete)",
                     input={"role": "user", "content": user_text},
                     metadata=trace_meta,
                 ) as span:
                     span.update(output={"status": "incomplete", "reason": "no assistant response"})
         else:
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Claude Code - Turn {turn_num} (incomplete)",
                 input={"role": "user", "content": user_text},
                 metadata=trace_meta,
@@ -679,7 +679,7 @@ def _emit_sequence_items_modern(
         if item["type"] == "thinking":
             thinking_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Thinking [{thinking_idx}]",
                 metadata={"type": "thinking", "text_meta": text_meta},
             ) as span:
@@ -688,7 +688,7 @@ def _emit_sequence_items_modern(
         elif item["type"] == "text":
             text_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Text [{text_idx}]",
                 metadata={"type": "text", "text_meta": text_meta},
             ) as span:
@@ -765,7 +765,7 @@ def _emit_modern(
         step = timedelta(milliseconds=1)
         t0 = datetime.now(timezone.utc)
 
-        with langfuse.start_as_current_span(
+        with langfuse.start_as_current_observation(as_type="span", 
             name=f"Claude Code - Turn {turn_num}",
             input={"role": "user", "content": user_text},
             metadata=trace_meta,
@@ -776,7 +776,7 @@ def _emit_modern(
             t_cursor = t0 + step
             if system_text:
                 time.sleep(0.002)
-                with langfuse.start_as_current_span(
+                with langfuse.start_as_current_observation(as_type="span", 
                     name="System Prompt",
                     input={"role": "system"},
                     metadata={"system_text": system_text_meta},
@@ -826,7 +826,7 @@ def _emit_legacy(
     step = timedelta(milliseconds=1)
     t0 = datetime.now(timezone.utc)
 
-    with langfuse.start_as_current_span(
+    with langfuse.start_as_current_observation(as_type="span", 
         name=f"Claude Code - Turn {turn_num}",
         input={"role": "user", "content": user_text},
         metadata=trace_meta,
@@ -848,7 +848,7 @@ def _emit_legacy(
         t_cursor = t0 + step
         if system_text:
             time.sleep(0.002)
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name="System Prompt",
                 input={"role": "system"},
                 metadata={"system_text": system_text_meta},
@@ -898,7 +898,7 @@ def _emit_sequence_items_legacy(
         if item["type"] == "thinking":
             thinking_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Thinking [{thinking_idx}]",
                 metadata={"type": "thinking", "text_meta": text_meta},
             ) as span:
@@ -907,7 +907,7 @@ def _emit_sequence_items_legacy(
         elif item["type"] == "text":
             text_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Text [{text_idx}]",
                 metadata={"type": "text", "text_meta": text_meta},
             ) as span:
@@ -1097,7 +1097,7 @@ def emit_notification_event(
             trace_name=name,
             tags=["claude-code", "notification", hostname],
         ):
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=name,
                 input={"event": "Notification"},
                 metadata=meta,
@@ -1105,7 +1105,7 @@ def emit_notification_event(
                 span.update(output=output)
         return
 
-    with langfuse.start_as_current_span(
+    with langfuse.start_as_current_observation(as_type="span", 
         name=name,
         input={"event": "Notification"},
         metadata=meta,
@@ -1185,7 +1185,7 @@ def emit_tool_event(
             trace_name=span_name,
             tags=["claude-code", event_type.lower(), hostname],
         ):
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=span_name,
                 input=in_str,
                 metadata=meta,
@@ -1193,7 +1193,7 @@ def emit_tool_event(
                 if out_str is not None:
                     span.update(output=out_str)
     else:
-        with langfuse.start_as_current_span(
+        with langfuse.start_as_current_observation(as_type="span", 
             name=span_name,
             input=in_str,
             metadata=meta,

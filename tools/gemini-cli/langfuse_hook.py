@@ -538,7 +538,7 @@ def _emit_turn_modern(
         step = timedelta(milliseconds=1)
         t0 = datetime.now(timezone.utc)
 
-        with langfuse.start_as_current_span(
+        with langfuse.start_as_current_observation(as_type="span", 
             name=f"Gemini CLI - Turn {turn_num}",
             input={"role": "user", "content": prompt_text},
             metadata=trace_meta,
@@ -550,7 +550,7 @@ def _emit_turn_modern(
             if trace_data.before_agent:
                 time.sleep(0.002)
                 agent_input, _ = safe_str(trace_data.before_agent.get("prompt", ""))
-                with langfuse.start_as_current_span(
+                with langfuse.start_as_current_observation(as_type="span", 
                     name="Agent Request",
                     input={"role": "user", "content": agent_input},
                     metadata={"event": "BeforeAgent", "timestamp": trace_data.before_agent.get("timestamp")},
@@ -601,7 +601,7 @@ def _emit_turn_modern(
             for i, ts_data in enumerate(trace_data.tool_selections):
                 time.sleep(0.002)
                 ts_str, ts_meta = safe_str(ts_data.get("llm_request"))
-                with langfuse.start_as_current_span(
+                with langfuse.start_as_current_observation(as_type="span", 
                     name=f"Tool Selection [{i + 1}]",
                     input={"request": ts_str},
                     metadata={
@@ -653,7 +653,7 @@ def _emit_turn_modern(
             for i, ev in enumerate(trace_data.events):
                 time.sleep(0.002)
                 ev_str, ev_meta = safe_str(ev)
-                with langfuse.start_as_current_span(
+                with langfuse.start_as_current_observation(as_type="span", 
                     name=f"Hook Event [{i + 1}]: {ev.get('event', 'unknown')}",
                     input=None,
                     metadata={
@@ -668,7 +668,7 @@ def _emit_turn_modern(
 
             # Agent Response
             time.sleep(0.002)
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name="Agent Response",
                 output={"role": "assistant", "content": response_text},
                 metadata={"event": "AfterAgent"},
@@ -686,7 +686,7 @@ def _emit_turn_legacy(
     step = timedelta(milliseconds=1)
     t0 = datetime.now(timezone.utc)
 
-    with langfuse.start_as_current_span(
+    with langfuse.start_as_current_observation(as_type="span", 
         name=f"Gemini CLI - Turn {turn_num}",
         input={"role": "user", "content": prompt_text},
         metadata=trace_meta,
@@ -709,7 +709,7 @@ def _emit_turn_legacy(
         if trace_data.before_agent:
             time.sleep(0.002)
             agent_input, _ = safe_str(trace_data.before_agent.get("prompt", ""))
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name="Agent Request",
                 input={"role": "user", "content": agent_input},
                 metadata={"event": "BeforeAgent", "timestamp": trace_data.before_agent.get("timestamp")},
@@ -760,7 +760,7 @@ def _emit_turn_legacy(
         for i, ts_data in enumerate(trace_data.tool_selections):
             time.sleep(0.002)
             ts_str, ts_meta = safe_str(ts_data.get("llm_request"))
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Tool Selection [{i + 1}]",
                 input={"request": ts_str},
                 metadata={
@@ -809,7 +809,7 @@ def _emit_turn_legacy(
         for i, ev in enumerate(trace_data.events):
             time.sleep(0.002)
             ev_str, ev_meta = safe_str(ev)
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Hook Event [{i + 1}]: {ev.get('event', 'unknown')}",
                 input=None,
                 metadata={
@@ -824,7 +824,7 @@ def _emit_turn_legacy(
 
         # Agent Response
         time.sleep(0.002)
-        with langfuse.start_as_current_span(
+        with langfuse.start_as_current_observation(as_type="span", 
             name="Agent Response",
             output={"role": "assistant", "content": response_text},
             metadata={"event": "AfterAgent"},
@@ -865,14 +865,14 @@ def emit_event(
             trace_name=f"Gemini CLI - {event_name}",
             tags=["gemini-cli", event_name.lower(), hostname],
         ):
-            with langfuse.start_as_current_span(
+            with langfuse.start_as_current_observation(as_type="span", 
                 name=f"Gemini CLI - {event_name}",
                 input={"event": event_name},
                 metadata=meta,
             ) as span:
                 span.update(output={"event": event_name, "data": data_str})
     else:
-        with langfuse.start_as_current_span(
+        with langfuse.start_as_current_observation(as_type="span", 
             name=f"Gemini CLI - {event_name}",
             input={"event": event_name},
             metadata=meta,

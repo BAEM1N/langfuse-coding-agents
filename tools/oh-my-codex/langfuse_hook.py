@@ -921,7 +921,7 @@ def _build_turn_payload(event_data: Dict[str, Any], turn: TurnData, rollout_path
 
 
 def _emit_rich_with_span_api(client: Any, data: Dict[str, Any], user_id: str) -> bool:
-    if not hasattr(client, "start_as_current_span"):
+    if not hasattr(client, "start_as_current_observation"):
         return False
 
     trace_name = f"Turn {data.get('turn_id') or 'unknown'}"
@@ -962,7 +962,7 @@ def _emit_rich_with_span_api(client: Any, data: Dict[str, Any], user_id: str) ->
         }
     )
 
-    with client.start_as_current_span(
+    with client.start_as_current_observation(as_type="span", 
         name=trace_name,
         input={"role": "user", "content": data.get("input_text") or "\n\n".join(data.get("user_messages", []) or [])},
         output={"role": "assistant", "content": data.get("output_text")},
@@ -997,7 +997,7 @@ def _emit_rich_with_span_api(client: Any, data: Dict[str, Any], user_id: str) ->
         include_turn_context_spans = _include_turn_context_spans()
         if include_turn_context_spans and developer_instr:
             try:
-                with client.start_as_current_span(
+                with client.start_as_current_observation(as_type="span", 
                     name="turn_context:developer_instructions",
                     input={"role": "developer"},
                     output=developer_instr,
@@ -1016,7 +1016,7 @@ def _emit_rich_with_span_api(client: Any, data: Dict[str, Any], user_id: str) ->
         user_instr = _as_str(data.get("user_instructions")).strip()
         if include_turn_context_spans and user_instr:
             try:
-                with client.start_as_current_span(
+                with client.start_as_current_observation(as_type="span", 
                     name="turn_context:user_instructions",
                     input={"role": "user"},
                     output=user_instr,
@@ -1124,7 +1124,7 @@ def _emit_rich_with_span_api(client: Any, data: Dict[str, Any], user_id: str) ->
                 if not txt:
                     continue
                 try:
-                    with client.start_as_current_span(
+                    with client.start_as_current_observation(as_type="span", 
                         name=f"reasoning[{rb.get('index')}]",
                         output=txt,
                         metadata=_compact_dict(
@@ -1172,7 +1172,7 @@ def _emit_rich_with_span_api(client: Any, data: Dict[str, Any], user_id: str) ->
                     pass
 
             try:
-                with client.start_as_current_span(
+                with client.start_as_current_observation(as_type="span", 
                     name=f"tool:{name}",
                     input=args_txt,
                     output=out_txt,
@@ -1308,8 +1308,8 @@ def _emit_lifecycle_event(client: Any, event_data: Dict[str, Any], user_id: str)
         )
         return True
 
-    if hasattr(client, "start_as_current_span"):
-        with client.start_as_current_span(
+    if hasattr(client, "start_as_current_observation"):
+        with client.start_as_current_observation(as_type="span", 
             name=name,
             input="\n\n".join(event_data.get("input_messages", []) or []),
             output=event_data.get("output_message"),

@@ -449,7 +449,7 @@ def _emit_lifecycle_trace(client: Any, payload: Dict[str, Any], event_name: str,
         "payload": _safe_json(_event_obj(payload)),
     }
     try:
-        with client.start_as_current_span(name=name, metadata=metadata, input=_event_obj(payload)):
+        with client.start_as_current_observation(as_type="span", name=name, metadata=metadata, input=_event_obj(payload)):
             if hasattr(client, "update_current_trace"):
                 client.update_current_trace(
                     name=name,
@@ -524,7 +524,7 @@ def _emit_turn_trace(
     }
 
     try:
-        with client.start_as_current_span(
+        with client.start_as_current_observation(as_type="span", 
             name=trace_name,
             input={"role": "user", "content": _truncate(input_text)},
             output={"role": "assistant", "content": _truncate(output_text)},
@@ -580,7 +580,7 @@ def _emit_turn_trace(
             for ts, kind, item in timeline:
                 span_start = ts if ts > t_cursor else t_cursor + step
                 if kind == "reasoning":
-                    with client.start_as_current_span(
+                    with client.start_as_current_observation(as_type="span", 
                         name=f"reasoning[{item.get('index')}]",
                         output=_truncate(item.get("text", "")),
                         metadata={"kind": "reasoning", "meta": item.get("meta")},
@@ -589,7 +589,7 @@ def _emit_turn_trace(
                     t_cursor = span_start + step
                     continue
 
-                with client.start_as_current_span(
+                with client.start_as_current_observation(as_type="span", 
                     name=f"tool:{item.get('name') or 'tool'}",
                     input=_truncate(item.get("input") or ""),
                     output=_truncate(item.get("output") or ""),
