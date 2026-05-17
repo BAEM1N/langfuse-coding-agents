@@ -29,7 +29,24 @@ python3 --version      # 3.8+
 python3 -m pip --version
 ```
 
+If Python is missing or too old, **ask the user before installing**, then use the platform-appropriate command:
+
+| OS | Command |
+|---|---|
+| macOS (with Homebrew) | `brew install python@3.12` |
+| macOS (no Homebrew) | `xcode-select --install` (Apple Command Line Tools ships Python 3.9+) |
+| Ubuntu / Debian | `sudo apt update && sudo apt install -y python3 python3-pip` |
+| Fedora / RHEL | `sudo dnf install -y python3 python3-pip` |
+| Arch | `sudo pacman -S --noconfirm python python-pip` |
+| Windows (winget) | `winget install -e --id Python.Python.3.12` |
+| Windows (Chocolatey) | `choco install -y python` |
+| Any OS, no sudo / no admin | install [`uv`](https://docs.astral.sh/uv/) — a single-binary Python installer + venv manager: `curl -LsSf https://astral.sh/uv/install.sh \| sh` (or PowerShell equivalent on Windows). Then `uv python install 3.12`. |
+
+`uv` is the recommended fallback when the user can't or won't touch system Python: it installs into `~/.local/share/uv/python/` without root, never collides with the system package manager, and `uv run python ...` works as a drop-in. After `uv python install 3.12`, surface the resulting interpreter path (`uv python find 3.12`) and use it in the rest of the setup instead of `python3`.
+
 The installer pins `langfuse>=4.0` (currently 4.6.x). Older Langfuse 3.x SDKs also work; both code paths are exercised by the same hooks via a compatibility shim — see *SDK 4.x notes* below.
+
+If the user has multiple Python versions, prefer the one already used by the AI tool you're integrating (e.g. some tools spawn `python3` from their own bundled env). When in doubt, check the user's shell `command -v python3` and the resolved version — don't assume the system default.
 
 ### Step 2 — clone the monorepo
 
@@ -197,6 +214,8 @@ The shim is opt-in: it only activates when the installed SDK lacks `update_curre
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Install hangs forever on `Langfuse Public Key  :` prompt | Agent ran `install.sh` directly under non-interactive shell | Kill it, follow Step 3 (interview the user) + Step 5 (non-interactive install) instead. |
+| `python3: command not found` or `python --version` shows `<3.8` | No suitable Python interpreter | Follow Step 1 — confirm the user wants to install, then use the OS-appropriate command (or `uv python install 3.12` if no admin/sudo). After install, re-verify with `python3 --version` before continuing. |
+| `pip: command not found` after Python installs successfully | pip not bundled (some Linux distros split it) | `python3 -m ensurepip --upgrade` or install the distro's `python3-pip` package. |
 | Hook log shows `Processed in X.Xs` but Langfuse has no trace for that session | SDK 4.x AttributeError silently swallowed | Confirm `langfuse_hook.py` contains `start_as_current_observation` AND `_Langfuse_class_for_compat` shim; if not, re-sync from monorepo. |
 | Traces arrive without `session_id` / `user_id` / `tags` | `update_current_trace` no-oping on SDK 4.x without the shim | Same fix as above. |
 | Trace `userId` is wrong per-tool | Shell env `LANGFUSE_USER_ID` shadows the tool's `.env` | `unset LANGFUSE_USER_ID` in the launching shell or override at invocation. |
