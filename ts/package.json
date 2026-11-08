@@ -1,0 +1,22 @@
+{
+  "name": "langfuse-agent-hooks",
+  "version": "0.1.0",
+  "description": "Zero-dependency Langfuse tracing hooks for AI coding agents (Claude Code, Codex CLI)",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "langfuse-agent-hooks": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
