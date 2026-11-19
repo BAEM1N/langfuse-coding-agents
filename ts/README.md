@@ -93,6 +93,115 @@ The hook never writes to stdout and always exits 0 — a tracing failure can't b
 
 Codex without a `transcript_path` in the payload: the rollout is located under `~/.codex/sessions/YYYY/MM/DD/rollout-*-<session_id>.jsonl`; if it can't be found, a minimal trace is built from the payload (`last_assistant_message`).
 
+## Verify call order and monitoring coverage
+
+The Claude and Codex exporters link tool spans to the issuing and consuming generation
+with `toolCallId`, `issuedByObservationId`, and `consumedByObservationId`. Timeline warnings
+flag duplicate results, results before calls, and missing pairs in completed turns.
+Parallel tool spans may overlap. When Codex cannot safely associate a command completion,
+it records the ambiguity instead of assigning the command to the first overlapping tool.
+
+```bash
+node src/cli.ts audit-langfuse claude --limit 20
+node src/cli.ts audit claude <transcript.jsonl>
+node src/cli.ts audit codex <rollout.jsonl>
+node src/cli.ts audit omp <omp-session.jsonl>
+node src/cli.ts audit antigravity <transcript.jsonl>
+```
+
+The audits print counts and issue codes. Langfuse audit reads up to the requested number
+of traces from the previous 24 hours in the configured project. If a legacy tool span
+lacks a call ID, it is counted as reduced coverage. Calls and results still present in
+its generation input and output can be correlated. Antigravity's local transcript
+exposes step indices, model usage and reported tool calls. The `GENERIC` records
+in the tested CLI format do not expose a stable tool-call ID for matching results.
+
+### Oh My Pi extension
+
+```bash
+omp -e /absolute/path/to/ts/src/omp-extension.ts
+```
+
+The extension reads an explicit tracing configuration from `~/.omp/agent/.env`, the
+shared `~/.config/langfuse-agent-hooks/.env`, or the process environment. It sends the
+latest turn from the active branch at `agent_end` when `TRACE_TO_LANGFUSE=true`. It
+exports token counts, timing, tool IDs and lifecycle warnings. Set
+`LANGFUSE_HOOK_CAPTURE_CONTENT=true` to include prompts, responses, and tool bodies.
+
+For regular sessions, add the absolute path to `omp-extension.ts` to the existing
+`extensions` list in `~/.omp/agent/config.yml`. With OMP 18.22.2, `--offline` can skip
+configured extensions. Pass `-e /absolute/path/to/omp-extension.ts` for an offline probe.
+[OMP extension discovery](https://github.com/can1357/oh-my-pi/blob/main/docs/extension-loading.md)
+
+### Antigravity
+
+```bash
+node src/cli.ts install antigravity --dry-run
+node src/cli.ts install antigravity
+```
+
+The installer merges a named hook into `~/.gemini/config/hooks.json`. Put the Langfuse
+configuration in `~/.gemini/antigravity-cli/.env` or the shared
+`~/.config/langfuse-agent-hooks/.env` and set `TRACE_TO_LANGFUSE=true`. The native
+invocation and tool hooks record timing as work happens. At `Stop`, the exporter joins
+tool results to the matching transcript step index and delivers a turn to Langfuse.
+Set `LANGFUSE_HOOK_CAPTURE_CONTENT=true` to include prompt, response, and tool bodies.
+
+### OpenCode
+
+The Python exporter groups assistant messages linked to the same user prompt into one
+trace. It waits for the terminal assistant message so an intermediate tool call cannot
+close the trace early. Model observations include token usage and the tool results passed
+to the next generation. Tool observations preserve native call IDs, observed start and
+end times, and links to the issuing and consuming generations.
+
+## OpenTelemetry traces
+
+Claude Code, Codex, OMP, Antigravity, and the OpenCode turn exporter can send
+OTLP/HTTP JSON traces. Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the complete
+traces URL or `OTEL_EXPORTER_OTLP_ENDPOINT` for the base URL. Trace-specific
+headers and timeout take precedence over the generic `OTEL_EXPORTER_OTLP_HEADERS`
+and `OTEL_EXPORTER_OTLP_TIMEOUT`. Header values can be percent-encoded.
+[OTLP specification](https://opentelemetry.io/docs/specs/otlp/)
+
+```dotenv
+TRACE_TO_LANGFUSE=true
+CODING_AGENT_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
+OTEL_CAPTURE_CONTENT=false
+```
+
+`CODING_AGENT_OTLP_TRACES_ENDPOINT` selects an endpoint for these hooks without
+enabling the host CLI's native OpenTelemetry exporter. Set
+`CODING_AGENT_OTLP_ENABLED=false` when the native exporter already covers the same
+agent. Langfuse and OTLP can run together or independently. The backend maps each
+completed turn to a root span with model and tool spans, including usage, call IDs,
+and links from each tool span to its issuing and consuming model spans. Delivery
+failures are logged and the agent continues. Replays use stable trace and span IDs.
+
+Set `OTEL_CAPTURE_CONTENT=true` to add redacted, bounded input/output attributes.
+OMP and Antigravity also require `LANGFUSE_HOOK_CAPTURE_CONTENT=true` to collect
+those bodies at the source. OpenCode uses the shared Node runtime for OTLP turns.
+Install the runtime with `node src/cli.ts install` or specify its path in
+`OPENCODE_LANGFUSE_OTLP_CLI`. OpenCode lifecycle traces use the existing Langfuse path.
+
+| Destination | Route |
+| --- | --- |
+| OpenTelemetry Collector | Send to an OTLP HTTP receiver, then configure one or more downstream exporters. [Collector configuration](https://opentelemetry.io/docs/collector/configuration/) |
+| Jaeger | Send directly to the OTLP HTTP traces endpoint or through a Collector. [Jaeger write APIs](https://www.jaegertracing.io/docs/latest/apis/) |
+| Grafana Tempo | Route traces through a Collector to Tempo's OTLP receiver. [Tempo configuration](https://grafana.com/docs/tempo/latest/configuration/) |
+| Honeycomb | Send OTLP HTTP JSON directly or use a Collector. [Honeycomb Collector setup](https://docs.honeycomb.io/send-data/opentelemetry/collector) |
+| Datadog | Use a Collector with the Datadog OTLP intake configuration. [Datadog Collector setup](https://docs.datadoghq.com/opentelemetry/setup/collector_exporter/) |
+
+## Additional agent candidates
+
+| Agent | Available evidence and integration work |
+| --- | --- |
+| Gemini CLI | The repository already ships a Langfuse hook. `BeforeModel`, `AfterModel`, `BeforeTool`, and `AfterTool` expose input/output. Group streamed model chunks and verify call IDs before moving this adapter to the shared exporter. [Gemini CLI hook reference](https://geminicli.com/docs/hooks/reference/) |
+| GitHub Copilot CLI | Repository hooks expose prompt and tool lifecycle events. Verify result IDs, response text and usage availability in the installed CLI before claiming full model coverage. [Copilot hooks](https://docs.github.com/en/copilot/concepts/customizations/hooks) |
+| Cursor | `preToolUse` and `postToolUse` are candidates for tool spans. Confirm each installed client surface provides a stable ID and verify final-response coverage separately. [Cursor hooks](https://prod.cursor.com/docs/hooks) |
+| Kiro | The hook set includes tool lifecycle events. Verify the per-event payload and model coverage on the intended CLI or IDE before wiring it into the exporter. [Kiro hooks](https://kiro.dev/docs/hooks/) |
+| oh-my-codex | The repository already has a Langfuse bridge. Audit duplicate Codex bridge and native hook events before enabling a shared OTLP route. [Existing bridge](../tools/oh-my-codex/README.md) |
+
 ## Develop
 
 ```bash
@@ -105,6 +214,5 @@ npm run typecheck
 
 ## Roadmap
 
-- pi / oh-my-pi adapter (TypeScript extension that reuses `src/core`)
 - Claude Code subagent transcripts as nested agent observations
-- Gemini CLI / OpenCode adapters
+- Gemini CLI adapter

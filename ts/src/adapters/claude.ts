@@ -49,6 +49,7 @@ interface TurnAcc {
   gens: Map<string, GenAcc>;
   tools: Map<string, ToolAcc>;
   events: TurnEvent[];
+  toolResults: NonNullable<Turn['toolResults']>;
   pendingInput: unknown[];
   complete: boolean;
   durationMs?: number;
@@ -151,6 +152,7 @@ export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions)
         gens: new Map(),
         tools: new Map(),
         events: [],
+        toolResults: [],
         pendingInput: [{ role: 'user', content: prompt }],
         complete: false,
       };
@@ -191,6 +193,7 @@ export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions)
       if (Array.isArray(c) && c.some((b: any) => b?.type === 'tool_result')) {
         for (const b of c) {
           if (b?.type !== 'tool_result') continue;
+          if (typeof b.tool_use_id === 'string') cur.toolResults.push({ key: b.tool_use_id, time: ts });
           const tool = cur.tools.get(b.tool_use_id);
           const text = contentText(b.content);
           if (tool) {
@@ -266,6 +269,7 @@ function finalize(t: TurnAcc): Turn {
     complete: t.complete,
     steps,
     events: t.events,
+    toolResults: t.toolResults,
     offset: t.offset,
     metadata: {
       ...t.meta,

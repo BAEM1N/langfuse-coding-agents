@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { homedir } from 'node:os';
 
 const ALLOWED_EVENTS = new Set([
   'session.created',
@@ -15,14 +16,14 @@ function resolveHookPath() {
   if (process.env.OPENCODE_LANGFUSE_HOOK_PATH) {
     return process.env.OPENCODE_LANGFUSE_HOOK_PATH;
   }
-  return path.join(process.env.HOME || '~', '.config', 'opencode', 'hooks', 'langfuse_hook.py');
+  return path.join(homedir(), '.config', 'opencode', 'hooks', 'langfuse_hook.py');
 }
 
 function debugDump(payload) {
   try {
     const enabled = String(process.env.OPENCODE_LANGFUSE_PLUGIN_DEBUG || '').toLowerCase();
     if (!['1', 'true', 'yes', 'on'].includes(enabled)) return;
-    const stateDir = path.join(process.env.HOME || '~', '.config', 'opencode', 'state', 'langfuse');
+    const stateDir = process.env.OPENCODE_LANGFUSE_STATE_DIR || path.join(homedir(), '.config', 'opencode', 'state', 'langfuse');
     fs.mkdirSync(stateDir, { recursive: true });
     fs.appendFileSync(
       path.join(stateDir, 'plugin_events.ndjson'),
@@ -34,11 +35,19 @@ function debugDump(payload) {
   }
 }
 
+let python;
 function findPython() {
-  for (const cmd of ['python3', 'python']) {
+  if (python) return python;
+  const venv = path.join(homedir(), '.config', 'opencode', 'langfuse-venv');
+  const scopedPython = process.platform === 'win32' ? path.join(venv, 'Scripts', 'python.exe') : path.join(venv, 'bin', 'python');
+  const candidates = [process.env.OPENCODE_LANGFUSE_PYTHON, fs.existsSync(scopedPython) ? scopedPython : undefined, 'python3', 'python'];
+  for (const cmd of candidates.filter(Boolean)) {
     try {
       const result = spawnSync(cmd, ['--version'], { timeout: 5000 });
-      if (result.status === 0) return cmd;
+      if (result.status === 0) {
+        python = cmd;
+        return python;
+      }
     } catch {}
   }
   return 'python3'; // fallback
@@ -51,7 +60,7 @@ function forwardToHook(payload) {
       input: JSON.stringify(payload || {}),
       stdio: ['pipe', 'ignore', 'ignore'],
       env: process.env,
-      timeout: 5000,
+      timeout: 10000,
     });
   } catch {
     // fail-open: never block OpenCode

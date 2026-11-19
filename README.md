@@ -10,6 +10,10 @@
 
 Every conversation turn, tool call, and model response from your coding agent becomes a structured trace in Langfuse — without modifying the agent itself.
 
+The [shared hook runtime](ts/README.md) covers Claude Code, Codex, OMP, and Antigravity,
+and works with the OpenCode turn exporter. It links tool calls to model executions
+and supports [OpenTelemetry traces](ts/README.md#opentelemetry-traces) alongside Langfuse.
+
 ---
 
 ## Contents

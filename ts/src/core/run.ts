@@ -5,14 +5,16 @@ import { parseClaudeTranscript } from '../adapters/claude.ts';
 import { turnToEvents, type BatchOptions } from './batch.ts';
 import { loadConfig, type Config } from './config.ts';
 import { readJsonlFrom } from './jsonl.ts';
-import { LangfuseClient } from './langfuse.ts';
+import { canExport, exportEvents } from './export.ts';
 import { createLogger, type Logger } from './log.ts';
 import { loadState, saveState, type TranscriptState } from './state.ts';
-import type { AgentName, HookPayload, Turn } from './types.ts';
+import type { AgentName, HookPayload, TraceAgentName, Turn } from './types.ts';
 
-const LABELS: Record<AgentName, { label: string; tag: string }> = {
+const LABELS: Record<TraceAgentName, { label: string; tag: string }> = {
   claude: { label: 'Claude Code', tag: 'claude-code' },
   codex: { label: 'Codex', tag: 'codex' },
+  omp: { label: 'Oh My Pi', tag: 'oh-my-pi' },
+  antigravity: { label: 'Antigravity', tag: 'antigravity' },
 };
 
 /** Accept both snake_case and camelCase payload keys. */
@@ -137,8 +139,7 @@ export interface HookResult {
 export async function runHook(agent: AgentName, raw: Record<string, unknown>, logger?: Logger): Promise<HookResult> {
   const cfg = loadConfig(agent);
   const log = logger ?? createLogger(logPath(cfg), cfg.debug);
-  if (!cfg.enabled) return { skipped: 'TRACE_TO_LANGFUSE is not true' };
-  if (!cfg.publicKey || !cfg.secretKey) return { skipped: 'missing Langfuse keys' };
+  if (!canExport(cfg)) return { skipped: 'no trace exporter configured' };
 
   const p = normalizePayload(raw);
   const event = p.hook_event_name ?? 'unknown';
@@ -170,15 +171,8 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
 
   const opts = batchOptions(cfg);
   const events = turns.flatMap((t) => turnToEvents(t, opts));
-  const client = new LangfuseClient({
-    baseUrl: cfg.baseUrl,
-    publicKey: cfg.publicKey,
-    secretKey: cfg.secretKey,
-    timeoutMs: cfg.timeoutMs,
-    logger: log,
-  });
   const started = Date.now();
-  const res = await client.ingest(events);
+  const res = await exportEvents(cfg, events, log);
   if (!res.ok) {
     log.error(`ingest failed (${res.errors.length} errors): ${JSON.stringify(res.errors.slice(0, 3))}`);
     return { turns: turns.length, events: events.length, errors: res.errors.length };

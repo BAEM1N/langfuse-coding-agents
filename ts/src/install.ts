@@ -23,6 +23,7 @@ export function packageRoot(): string {
 }
 
 const fwd = (p: string) => p.replace(/\\/g, '/');
+const psQuote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 function isOurs(entry: unknown): boolean {
   const s = JSON.stringify(entry);
@@ -53,7 +54,7 @@ export function mergeHooks(hooks: Record<string, unknown[]>, events: string[], e
 }
 
 export interface InstallPlan {
-  agent: AgentName;
+  agent: AgentName | 'antigravity';
   file: string;
   before: unknown;
   after: unknown;
@@ -74,9 +75,37 @@ export function planInstall(agent: AgentName, cliPath: string, nodePath = proces
   }
   const file = join(home, 'hooks.json');
   const before = readJson(file);
-  const entry = { hooks: [{ type: 'command', command: `"${nodePath}" "${cliPath}" hook codex` }] };
+  const command = process.platform === 'win32'
+    ? `& ${psQuote(nodePath)} ${psQuote(cliPath)} hook codex`
+    : `"${nodePath}" "${cliPath}" hook codex`;
+  const entry = { hooks: [{ type: 'command', command }] };
   const after = { ...before, hooks: mergeHooks(before.hooks ?? {}, remove ? [] : HOOK_EVENTS.codex, entry) };
   return { agent, file, before, after };
+}
+
+export function planAntigravityInstall(cliPath: string, nodePath = process.execPath, remove = false): InstallPlan {
+  const file = join(homedir(), '.gemini', 'config', 'hooks.json');
+  const before = readJson(file);
+  const after = { ...before };
+  const name = 'langfuse-agent-hooks';
+  if (remove) {
+    delete after[name];
+  } else {
+    const command = (phase: string) => ({
+      type: 'command',
+      command: `"${nodePath}" "${cliPath}" antigravity-hook ${phase}`,
+      timeout: phase === 'Stop' ? 25 : 5,
+    });
+    after[name] = {
+      ...before[name],
+      PreToolUse: [{ matcher: '.*', hooks: [command('PreToolUse')] }],
+      PostToolUse: [{ matcher: '.*', hooks: [command('PostToolUse')] }],
+      PreInvocation: [command('PreInvocation')],
+      PostInvocation: [command('PostInvocation')],
+      Stop: [command('Stop')],
+    };
+  }
+  return { agent: 'antigravity', file, before, after };
 }
 
 export function applyPlan(plan: InstallPlan): void {

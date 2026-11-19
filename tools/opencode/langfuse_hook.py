@@ -12,13 +12,18 @@ Input: JSON payload on stdin, usually forwarded by langfuse_plugin.js:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import socket
+import subprocess
 import sys
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from urllib.request import Request, urlopen
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,9 +90,14 @@ try:
 except Exception:  # pragma: no cover
     fcntl = None
 
+try:
+    import msvcrt  # type: ignore
+except ImportError:
+    msvcrt = None
+
 
 CONFIG_DIR = Path.home() / ".config" / "opencode"
-STATE_DIR = CONFIG_DIR / "state" / "langfuse"
+STATE_DIR = Path(os.environ["OPENCODE_LANGFUSE_STATE_DIR"]) if os.environ.get("OPENCODE_LANGFUSE_STATE_DIR") else CONFIG_DIR / "state" / "langfuse"
 STATE_FILE = STATE_DIR / "state.json"
 STATE_LOCK_FILE = STATE_DIR / "state.lock"
 LOG_FILE = STATE_DIR / "langfuse_hook.log"
@@ -197,10 +207,14 @@ def _state_lock():
     lock_fd = None
     locked = False
     try:
-        if fcntl is not None:
+        if fcntl is not None or msvcrt is not None:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             lock_fd = STATE_LOCK_FILE.open("a+", encoding="utf-8")
-            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            else:
+                lock_fd.seek(0)
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
             locked = True
     except Exception:
         locked = False
@@ -214,9 +228,13 @@ def _state_lock():
     try:
         yield
     finally:
-        if locked and lock_fd is not None and fcntl is not None:
+        if locked and lock_fd is not None:
             try:
-                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                else:
+                    lock_fd.seek(0)
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
             except Exception:
                 pass
         if lock_fd is not None:
@@ -472,13 +490,18 @@ def _build_turn_details(parts_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, 
             # Emit once tool reaches a terminal state.
             if status not in {"completed", "error"}:
                 continue
+            tool_time = _as_dict(state.get("time"))
+            source_start = _parse_dt(tool_time.get("start")) or _parse_dt(time_obj.get("start"))
+            source_end = _parse_dt(tool_time.get("end")) or _parse_dt(time_obj.get("end"))
             input_obj = state.get("input")
             output_txt = state.get("output") if status == "completed" else state.get("error")
             tools.append(
                 {
                     "id": pid,
                     "name": p.get("tool") or "tool",
-                    "timestamp": ts,
+                    "timestamp": source_start,
+                    "end_time": source_end,
+                    "call_id": p.get("callID") or pid,
                     "status": status,
                     "input": json.dumps(input_obj, ensure_ascii=False) if isinstance(input_obj, (dict, list)) else str(input_obj or ""),
                     "output": str(output_txt or ""),
@@ -488,7 +511,7 @@ def _build_turn_details(parts_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, 
 
     text_rows.sort(key=lambda x: (x[0], x[1]))
     reasoning_rows.sort(key=lambda x: (x["timestamp"], x["id"]))
-    tools.sort(key=lambda x: (x["timestamp"], x["id"]))
+    tools.sort(key=lambda x: (x["timestamp"] or datetime.max.replace(tzinfo=timezone.utc), x["id"]))
     output_text = "\n".join([r[2] for r in text_rows]).strip()
     return output_text, reasoning_rows, tools
 
@@ -521,199 +544,149 @@ def _emit_lifecycle_trace(client: Any, payload: Dict[str, Any], event_name: str,
         _log("DEBUG", f"lifecycle emit failed: {exc}")
 
 
-def _emit_turn_trace(
-    client: Any,
-    session_id: str,
-    user_info: Dict[str, Any],
-    assistant_info: Dict[str, Any],
-    user_message_events: List[Dict[str, Any]],
-    assistant_message_events: List[Dict[str, Any]],
-    user_parts_map: Dict[str, Any],
-    assistant_parts_map: Dict[str, Any],
-    input_text: str,
-    output_text: str,
-    reasoning: List[Dict[str, Any]],
-    tools: List[Dict[str, Any]],
-) -> None:
-    message_id = str(assistant_info.get("id") or "unknown")
-    trace_name = f"OpenCode turn {message_id}"
-    user_id = os.environ.get("LANGFUSE_USER_ID", "opencode-user")
-    created_at = _parse_dt(_as_dict(assistant_info.get("time")).get("created")) or datetime.now(timezone.utc)
+def _stable_id(*parts: str) -> str:
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:32]
 
-    metadata = {
-        "product": "opencode",
-        "reconstruction": "plugin-event-turn-assembly",
-        "source": "opencode",
-        "session_id": session_id,
-        "user_id": user_id,
-        "hostname": socket.gethostname(),
-        "message_id": message_id,
-        "parent_message_id": assistant_info.get("parentID"),
-        "provider_id": assistant_info.get("providerID"),
-        "model_id": assistant_info.get("modelID"),
-        "agent": assistant_info.get("agent"),
-        "mode": assistant_info.get("mode"),
-        "cost": assistant_info.get("cost"),
-        "tokens": _safe_json(assistant_info.get("tokens")),
-        "reasoning_count": len(reasoning),
-        "tool_count": len(tools),
-        "messages": {
-            "user_info": _safe_json(user_info),
-            "assistant_info": _safe_json(assistant_info),
-        },
-        "message_events": {
-            "user": _safe_json(user_message_events),
-            "assistant": _safe_json(assistant_message_events),
-        },
-        "message_events_count": {
-            "user": len(user_message_events),
-            "assistant": len(assistant_message_events),
-        },
-        "parts": {
-            "user": [_serialize_part(_as_dict(p)) for p in user_parts_map.values()],
-            "assistant": [_serialize_part(_as_dict(p)) for p in assistant_parts_map.values()],
-        },
-        "parts_count": {
-            "user_total": len(user_parts_map),
-            "assistant_total": len(assistant_parts_map),
-            "user_by_type": _parts_type_counts(user_parts_map),
-            "assistant_by_type": _parts_type_counts(assistant_parts_map),
-        },
-    }
 
+def _otlp_enabled() -> bool:
+    return os.environ.get("CODING_AGENT_OTLP_ENABLED") != "false" and bool(
+        os.environ.get("CODING_AGENT_OTLP_TRACES_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    )
+
+
+def _export_otlp(events: List[Dict[str, Any]]) -> bool:
+    deployed = Path.home() / ".local" / "share" / "langfuse-agent-hooks" / "src" / "cli.ts"
+    repo_cli = Path(__file__).resolve().parents[2] / "ts" / "src" / "cli.ts"
+    cli = os.environ.get("OPENCODE_LANGFUSE_OTLP_CLI") or str(deployed if deployed.is_file() else repo_cli)
     try:
-        with client.start_as_current_observation(as_type="span", 
-            name=trace_name,
-            input={"role": "user", "content": _truncate(input_text)},
-            output={"role": "assistant", "content": _truncate(output_text)},
-            metadata=metadata,
-        ) as root:
-            if hasattr(client, "update_current_trace"):
-                client.update_current_trace(
-                    name=trace_name,
-                    session_id=session_id,
-                    user_id=user_id,
-                    tags=["opencode", "hook-only", "deep-observability"],
-                    metadata=metadata,
-                )
-            try:
-                root.update(start_time=created_at)
-            except Exception:
-                pass
+        result = subprocess.run(["node", cli, "export-otlp", "opencode"], input=json.dumps(events).encode(),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8, check=False)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _log("DEBUG", f"OTLP export failed: {type(exc).__name__}")
+        return False
 
-            step = timedelta(milliseconds=1)
-            t_cursor = created_at + step
 
-            if hasattr(client, "start_as_current_generation"):
-                try:
-                    usage = _as_dict(assistant_info.get("tokens"))
-                    usage_payload = {
-                        "input": int(usage.get("input") or 0),
-                        "output": int(usage.get("output") or 0),
-                        "total": int(usage.get("total") or 0),
-                        "reasoning": int(usage.get("reasoning") or 0),
-                        "input_cache_read": int(_as_dict(usage.get("cache")).get("read") or 0),
-                    }
-                    with client.start_as_current_generation(
-                        name="assistant_turn",
-                        model=assistant_info.get("modelID"),
-                        input={"role": "user", "content": _truncate(input_text)},
-                        output={"role": "assistant", "content": _truncate(output_text)},
-                        metadata={"provider_id": assistant_info.get("providerID"), "agent": assistant_info.get("agent")},
-                    ) as gen:
-                        gen.update(start_time=t_cursor)
-                        gen.update(usage=usage_payload)
-                        gen.update(usage_details=usage_payload)
-                    t_cursor = t_cursor + step
-                except Exception:
-                    pass
-
-            timeline: List[Tuple[datetime, str, Dict[str, Any]]] = []
-            for idx, rb in enumerate(reasoning, start=1):
-                timeline.append((rb.get("timestamp") or t_cursor, "reasoning", {"index": idx, **rb}))
-            for tool in tools:
-                timeline.append((tool.get("timestamp") or t_cursor, "tool", tool))
-            timeline.sort(key=lambda x: (x[0], x[1], str(x[2].get("id") or "")))
-
-            for ts, kind, item in timeline:
-                span_start = ts if ts > t_cursor else t_cursor + step
-                if kind == "reasoning":
-                    with client.start_as_current_observation(as_type="span", 
-                        name=f"reasoning[{item.get('index')}]",
-                        output=_truncate(item.get("text", "")),
-                        metadata={"kind": "reasoning", "meta": item.get("meta")},
-                    ) as span:
-                        span.update(start_time=span_start)
-                    t_cursor = span_start + step
-                    continue
-
-                with client.start_as_current_observation(as_type="span", 
-                    name=f"tool:{item.get('name') or 'tool'}",
-                    input=_truncate(item.get("input") or ""),
-                    output=_truncate(item.get("output") or ""),
-                    metadata={"kind": "tool", "status": item.get("status"), "meta": item.get("meta")},
-                ) as span:
-                    span.update(start_time=span_start)
-                t_cursor = span_start + step
-
-        client.flush()
+def _export_langfuse(events: List[Dict[str, Any]]) -> bool:
+    base_url = os.environ.get("LANGFUSE_BASE_URL", "").strip().rstrip("/")
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip()
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY", "").strip()
+    credentials = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+    try:
+        request = Request(base_url + "/api/public/ingestion", data=json.dumps({"batch": events}).encode(),
+                          headers={"Content-Type": "application/json", "Authorization": f"Basic {credentials}"})
+        with urlopen(request, timeout=6) as response:
+            return not json.load(response).get("errors")
     except Exception as exc:
-        _log("DEBUG", f"turn emit failed: {exc}")
+        _log("DEBUG", f"turn ingestion failed: {type(exc).__name__}")
+        return False
 
 
-def _maybe_emit_assistant_turn(client: Any, state: Dict[str, Any], session_id: str, message_id: str, info: Dict[str, Any]) -> None:
+def _emit_turn_trace(state: Dict[str, Any], session_id: str, parent_id: str, messages: List[Tuple[str, Dict[str, Any]]]) -> bool:
+    trace_id = _stable_id("opencode", session_id, parent_id)
+    root_id = _stable_id(trace_id, "agent")
+    user_parts = _as_dict(state["user_parts"].get(_msg_key(session_id, parent_id)))
+    prompt = _extract_text_from_parts(user_parts)
+    events: List[Dict[str, Any]] = []
+    now = _iso_now()
+
+    def add(kind: str, **body: Any) -> None:
+        events.append({"id": str(uuid.uuid4()), "timestamp": now, "type": kind,
+                       "body": {k: v for k, v in body.items() if v is not None}})
+
+    generation_ids = [_stable_id(trace_id, key) for key, _ in messages]
+    start = _as_dict(messages[0][1].get("time")).get("created")
+    completed = _parse_dt(_as_dict(messages[-1][1].get("time")).get("completed"))
+    first = _parse_dt(start)
+    final = ""
+    carried: List[Dict[str, Any]] = [{"role": "user", "content": _truncate(prompt)}]
+    for index, (key, info) in enumerate(messages):
+        parts = _as_dict(state["assistant_parts"].get(key))
+        final, reasoning, tools = _build_turn_details(parts)
+        created = _parse_dt(_as_dict(info.get("time")).get("created"))
+        finished = _parse_dt(_as_dict(info.get("time")).get("completed"))
+        started = next((_parse_dt(p.get("_captured_at")) for p in parts.values() if p.get("type") == "step-start"), None)
+        starts = [t["timestamp"] for t in tools if t["timestamp"]]
+        ended = min(starts) if starts else finished
+        usage = _as_dict(info.get("tokens"))
+        cache = _as_dict(usage.get("cache"))
+        generation = generation_ids[index]
+        add("generation-create", id=generation, traceId=trace_id, parentObservationId=root_id,
+            name=info.get("modelID") or "OpenCode model", model=info.get("modelID"),
+            startTime=(started or created).isoformat() if (started or created) else now,
+            endTime=ended.isoformat() if ended else None, input=carried,
+            output={"text": _truncate(final), "toolCalls": [
+                {"id": t["call_id"], "name": t["name"], "input": _truncate(t["input"])} for t in tools]},
+            usageDetails={"input": usage.get("input", 0), "output": usage.get("output", 0),
+                          "total": usage.get("total", 0), "reasoning": usage.get("reasoning", 0),
+                          "input_cached_tokens": cache.get("read", 0), "input_cache_creation": cache.get("write", 0)},
+            metadata={"provider": info.get("providerID"), "messageId": info.get("id"),
+                      "finish": info.get("finish"), "reasoning": [_truncate(r["text"]) for r in reasoning]})
+        carried = []
+        for tool in tools:
+            tool_start, tool_end = tool["timestamp"], tool["end_time"]
+            call_id = tool["call_id"]
+            add("tool-create", id=_stable_id(generation, str(call_id)), traceId=trace_id,
+                parentObservationId=root_id, name="tool:" + tool["name"],
+                startTime=tool_start.isoformat() if tool_start else None,
+                endTime=tool_end.isoformat() if tool_end else None,
+                input=_truncate(tool["input"]), output=_truncate(tool["output"]),
+                level="ERROR" if tool["status"] == "error" else None,
+                metadata={"toolCallId": call_id, "issuedByObservationId": generation,
+                          "consumedByObservationId": generation_ids[index + 1] if index + 1 < len(messages) else None})
+            carried.append({"role": "tool", "call_id": call_id, "content": _truncate(tool["output"])})
+
+    title = f"OpenCode turn {parent_id}"
+    start_time = first.isoformat() if first else now
+    end_time = completed.isoformat() if completed else None
+    input_data, output_data = _truncate(prompt), _truncate(final)
+    add("trace-create", id=trace_id, name=title, sessionId=session_id,
+        userId=os.environ.get("LANGFUSE_USER_ID", "opencode-user"), timestamp=start_time,
+        input=input_data, output=output_data, tags=["opencode", socket.gethostname()],
+        metadata={"source": "opencode", "generationCount": len(messages)})
+    add("agent-create", id=root_id, traceId=trace_id, name="OpenCode", startTime=start_time,
+        endTime=end_time, input=input_data, output=output_data)
+
+    batch = events[-2:] + events[:-2]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        sends = []
+        if os.environ.get("TRACE_TO_LANGFUSE", "").strip().lower() == "true":
+            sends.append(pool.submit(_export_langfuse, batch))
+        if _otlp_enabled():
+            sends.append(pool.submit(_export_otlp, batch))
+        return all([future.result() for future in sends])
+
+
+def _maybe_emit_assistant_turn(state: Dict[str, Any], session_id: str, message_id: str, info: Dict[str, Any]) -> None:
+    parent_id = str(info.get("parentID") or "")
+    if not parent_id or info.get("finish") in {None, "tool-calls", "unknown"}:
+        return
+    if not _as_dict(info.get("time")).get("completed"):
+        return
     turn_id = _turn_key(session_id, message_id)
     if state["emitted"].get(turn_id):
         return
-
-    parent_id = str(info.get("parentID") or "")
-    user_key = _msg_key(session_id, parent_id) if parent_id else ""
-    assistant_key = _msg_key(session_id, message_id)
-    user_info = _as_dict(state["messages"].get(user_key))
-    user_message_events = state["message_events"].get(user_key, []) if user_key else []
-    assistant_message_events = state["message_events"].get(assistant_key, [])
-    user_parts = _as_dict(state["user_parts"].get(user_key))
-    assistant_parts = _as_dict(state["assistant_parts"].get(assistant_key))
-
-    input_text = _extract_text_from_parts(user_parts)
-    output_text, reasoning, tools = _build_turn_details(assistant_parts)
-    if not output_text and not reasoning and not tools:
-        _log("DEBUG", f"turn skip: no output session={session_id} message={message_id}")
+    prefix = f"{session_id}:"
+    group = [(key, msg) for key, msg in state["messages"].items()
+             if key.startswith(prefix) and msg.get("role") == "assistant" and msg.get("parentID") == parent_id]
+    group.sort(key=lambda item: (_as_dict(item[1].get("time")).get("created") or 0, item[0]))
+    final_key = _msg_key(session_id, message_id)
+    final_index = next((index for index, (key, _) in enumerate(group) if key == final_key), -1)
+    if final_index < 0 or not state["assistant_parts"].get(final_key):
         return
-
-    _emit_turn_trace(
-        client,
-        session_id,
-        user_info,
-        info,
-        user_message_events,
-        assistant_message_events,
-        user_parts,
-        assistant_parts,
-        input_text,
-        output_text,
-        reasoning,
-        tools,
-    )
-    state["emitted"][turn_id] = _iso_now()
-    _log(
-        "INFO",
-        (
-            f"turn emitted session={session_id} turn_id={turn_id} "
-            f"assistant_message_id={message_id} "
-            f"user_message_events={len(user_message_events)} assistant_message_events={len(assistant_message_events)} "
-            f"user_parts={len(user_parts)} assistant_parts={len(assistant_parts)} "
-            f"reasoning={len(reasoning)} tools={len(tools)}"
-        ),
-    )
-
-    # Keep memory bounded.
-    state["assistant_parts"].pop(assistant_key, None)
-    state["message_events"].pop(assistant_key, None)
-    state["assistant_finish_seen"].pop(assistant_key, None)
-    if user_key:
-        state["user_parts"].pop(user_key, None)
-        state["message_events"].pop(user_key, None)
+    group = group[:final_index + 1]
+    if not _emit_turn_trace(state, session_id, parent_id, group):
+        return
+    for key, msg in group:
+        state["emitted"][_turn_key(session_id, str(msg["id"]))] = _iso_now()
+        state["assistant_parts"].pop(key, None)
+        state["message_events"].pop(key, None)
+        state["assistant_finish_seen"].pop(key, None)
+    user_key = _msg_key(session_id, parent_id)
+    state["user_parts"].pop(user_key, None)
+    state["message_events"].pop(user_key, None)
+    _log("INFO", f"turn emitted session={session_id} turn_id={turn_id} generations={len(group)}")
 
 
 def _cleanup_emitted_message_buffers(state: Dict[str, Any], session_id: str, message_id: str) -> None:
@@ -723,7 +696,7 @@ def _cleanup_emitted_message_buffers(state: Dict[str, Any], session_id: str, mes
     state["assistant_finish_seen"].pop(key, None)
 
 
-def _flush_pending_assistant_turns(client: Any, state: Dict[str, Any], session_id: str, reason: str) -> None:
+def _flush_pending_assistant_turns(state: Dict[str, Any], session_id: str, reason: str) -> None:
     if not session_id or session_id == "unknown-session":
         return
 
@@ -754,7 +727,7 @@ def _flush_pending_assistant_turns(client: Any, state: Dict[str, Any], session_i
             info = {"id": message_id, "role": "assistant", "time": {}, "parentID": ""}
 
         before = bool(state["emitted"].get(turn_id))
-        _maybe_emit_assistant_turn(client, state, session_id, message_id, info)
+        _maybe_emit_assistant_turn(state, session_id, message_id, info)
         after = bool(state["emitted"].get(turn_id))
         if after and not before:
             emitted_now += 1
@@ -763,7 +736,7 @@ def _flush_pending_assistant_turns(client: Any, state: Dict[str, Any], session_i
         _log("INFO", f"flush emitted pending turns session={session_id} reason={reason} scanned={scanned} emitted={emitted_now}")
 
 
-def _handle_message_updated(client: Any, state: Dict[str, Any], payload: Dict[str, Any], session_id: str) -> None:
+def _handle_message_updated(state: Dict[str, Any], payload: Dict[str, Any], session_id: str) -> None:
     info = _as_dict(_event_props(payload).get("info"))
     message_id = str(info.get("id") or "")
     if not message_id:
@@ -803,11 +776,10 @@ def _handle_message_updated(client: Any, state: Dict[str, Any], payload: Dict[st
     completed = bool(_as_dict(info.get("time")).get("completed"))
     if completed:
         state["assistant_finish_seen"][key] = _iso_now()
-    if completed:
-        _maybe_emit_assistant_turn(client, state, session_id, message_id, info)
+        _maybe_emit_assistant_turn(state, session_id, message_id, info)
 
 
-def _handle_message_part_updated(client: Any, state: Dict[str, Any], payload: Dict[str, Any], session_id: str) -> None:
+def _handle_message_part_updated(state: Dict[str, Any], payload: Dict[str, Any], session_id: str) -> None:
     part = _as_dict(_event_props(payload).get("part"))
     message_id = str(part.get("messageID") or "")
     part_id = str(part.get("id") or "")
@@ -831,6 +803,7 @@ def _handle_message_part_updated(client: Any, state: Dict[str, Any], payload: Di
     msg = _as_dict(state["messages"].get(key))
     role = str(msg.get("role") or "").lower()
     part_type = str(part.get("type") or "")
+    part["_captured_at"] = event_dt.isoformat()
 
     # Fallback inference when message.updated has not arrived yet.
     if not role:
@@ -851,22 +824,23 @@ def _handle_message_part_updated(client: Any, state: Dict[str, Any], payload: Di
             state["assistant_finish_seen"][key] = _iso_now()
         completed = bool(_as_dict(msg.get("time")).get("completed")) if msg else False
         finish_seen = bool(_as_dict(state.get("assistant_finish_seen")).get(key))
-        if completed or finish_seen:
-            _maybe_emit_assistant_turn(client, state, session_id, message_id, msg or {"id": message_id, "role": "assistant"})
+        if completed and finish_seen:
+            _maybe_emit_assistant_turn(state, session_id, message_id, msg or {"id": message_id, "role": "assistant"})
 
 
 def main() -> None:
     _load_dotenv()
 
-    if os.environ.get("TRACE_TO_LANGFUSE", "").strip().lower() != "true":
+    langfuse_enabled = os.environ.get("TRACE_TO_LANGFUSE", "").strip().lower() == "true"
+    if not langfuse_enabled and not _otlp_enabled():
         return
 
     payload = _read_payload()
     if not payload:
         return
 
-    client = _build_client()
-    if client is None:
+    client = _build_client() if langfuse_enabled else None
+    if client is None and not _otlp_enabled():
         return
 
     event_name = _event_name(payload)
@@ -878,13 +852,13 @@ def main() -> None:
         state["session_lifecycle"] = lifecycle_map
 
         if event_name == "message.updated":
-            _handle_message_updated(client, state, payload, session_id)
+            _handle_message_updated(state, payload, session_id)
         elif event_name == "message.part.updated":
-            _handle_message_part_updated(client, state, payload, session_id)
+            _handle_message_part_updated(state, payload, session_id)
             last = _as_dict(lifecycle_map.get(session_id))
             last_event = str(last.get("event") or "")
             if last_event in {"session.idle", "session.error", "session.compacted"}:
-                _flush_pending_assistant_turns(client, state, session_id, f"{last_event}:post-part")
+                _flush_pending_assistant_turns(state, session_id, f"{last_event}:post-part")
         elif event_name in {"message.removed", "message.part.removed"}:
             # Best-effort cleanup events can be handled later if needed.
             pass
@@ -897,9 +871,9 @@ def main() -> None:
                 lifecycle_map[session_id] = {"event": event_name, "at": event_dt.isoformat()}
 
         if event_name in {"session.idle", "session.error", "session.compacted"}:
-            _flush_pending_assistant_turns(client, state, session_id, event_name)
+            _flush_pending_assistant_turns(state, session_id, event_name)
 
-        if event_name in {"session.created", "session.idle", "session.error", "session.compacted"}:
+        if client is not None and event_name in {"session.created", "session.idle", "session.error", "session.compacted"}:
             _emit_lifecycle_trace(client, payload, event_name, session_id)
 
         _save_state(state)

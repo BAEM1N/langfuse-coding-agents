@@ -1,10 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
-import type { AgentName } from './types.ts';
+import type { TraceAgentName } from './types.ts';
+import { loadOtlpConfig, type OtlpConfig } from './otlp.ts';
 
 export interface Config {
-  agent: AgentName;
+  agent: TraceAgentName;
   agentHome: string;
   enabled: boolean;
   publicKey?: string;
@@ -17,10 +18,14 @@ export interface Config {
   redact: boolean;
   debug: boolean;
   timeoutMs: number;
+  otlp?: OtlpConfig;
+  otlpError?: string;
 }
 
-export function agentHome(agent: AgentName): string {
+export function agentHome(agent: TraceAgentName): string {
   if (agent === 'claude') return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  if (agent === 'antigravity') return join(homedir(), '.gemini', 'antigravity-cli');
+  if (agent === 'omp') return process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp', 'agent');
   return process.env.CODEX_HOME || join(homedir(), '.codex');
 }
 
@@ -65,15 +70,20 @@ function pick(env: NodeJS.ProcessEnv, ...names: string[]): string | undefined {
  * ~/.config/langfuse-agent-hooks/.env. The agent .env files are shared with the
  * Python hooks, so both implementations read the same credentials.
  */
-export function loadConfig(agent: AgentName, env: NodeJS.ProcessEnv = process.env): Config {
+export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = process.env): Config {
   const home = agentHome(agent);
   loadDotenv(join(home, '.env'), env);
   loadDotenv(join(sharedConfigDir(), '.env'), env);
 
   const maxChars = Number.parseInt(pick(env, 'LANGFUSE_HOOK_MAX_CHARS', 'CC_LANGFUSE_MAX_CHARS') ?? '20000', 10);
+  let otlp: OtlpConfig | undefined;
+  let otlpError: string | undefined;
+  try { otlp = loadOtlpConfig(env); } catch { otlpError = 'Invalid OTLP endpoint, protocol, or headers'; }
   return {
     agent,
     agentHome: home,
+    otlp,
+    otlpError,
     enabled: (pick(env, 'TRACE_TO_LANGFUSE') ?? '').toLowerCase() === 'true',
     publicKey: pick(env, 'CC_LANGFUSE_PUBLIC_KEY', 'LANGFUSE_PUBLIC_KEY'),
     secretKey: pick(env, 'CC_LANGFUSE_SECRET_KEY', 'LANGFUSE_SECRET_KEY'),

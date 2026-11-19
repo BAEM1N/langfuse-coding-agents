@@ -2,6 +2,7 @@
 // transcript into Turn objects; core/batch.ts turns them into Langfuse events.
 
 export type AgentName = 'claude' | 'codex';
+export type TraceAgentName = AgentName | 'omp' | 'antigravity';
 
 export type Level = 'DEBUG' | 'DEFAULT' | 'WARNING' | 'ERROR';
 
@@ -45,6 +46,11 @@ export interface TurnEvent {
   level?: Level;
 }
 
+export interface ToolResultEvidence {
+  key: string;
+  time?: string;
+}
+
 export interface Turn {
   /** Stable key within the session (prompt id / turn id). */
   key: string;
@@ -58,6 +64,7 @@ export interface Turn {
   complete: boolean;
   steps: Array<GenerationStep | ToolStep>;
   events: TurnEvent[];
+  toolResults?: ToolResultEvidence[];
   metadata: Record<string, unknown>;
   /** Byte offset in the transcript where this turn starts (for incremental reads). */
   offset: number;

@@ -2,19 +2,27 @@
 // langfuse-agent-hooks — zero-dependency Langfuse tracing for AI coding agents.
 //
 //   node src/cli.ts hook <claude|codex>          (called by the agent; reads JSON on stdin)
-//   node src/cli.ts install [claude|codex|all] [--dry-run]
-//   node src/cli.ts uninstall [claude|codex|all]
+//   node src/cli.ts install [claude|codex|antigravity|all] [--dry-run]
+//   node src/cli.ts uninstall [claude|codex|antigravity|all]
 //   node src/cli.ts doctor [claude|codex]
+//   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
+//   node src/cli.ts audit-langfuse [claude|codex] [--limit N]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> [--session ID] [--dry-run]
 
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { loadConfig } from './core/config.ts';
+import { auditLangfuse, summarizeTurns } from './core/audit.ts';
+import { parseOmpSession } from './adapters/omp.ts';
+import { runAntigravityHook } from './core/antigravity-hook.ts';
+import { auditAntigravity } from './adapters/antigravity.ts';
+import { readJsonlFrom } from './core/jsonl.ts';
 import { batchOptions, logPath, parseTranscript, runHook } from './core/run.ts';
 import { turnToEvents } from './core/batch.ts';
 import { LangfuseClient } from './core/langfuse.ts';
 import { createLogger } from './core/log.ts';
-import { applyPlan, deployPackage, HOOK_EVENTS, planInstall } from './install.ts';
+import { exportOtlp, loadOtlpConfig } from './core/otlp.ts';
+import { applyPlan, deployPackage, HOOK_EVENTS, planAntigravityInstall, planInstall } from './install.ts';
 import type { AgentName } from './core/types.ts';
 
 const AGENTS: AgentName[] = ['claude', 'codex'];
@@ -65,6 +73,13 @@ async function cmdHook(agent: AgentName): Promise<void> {
 
 function cmdInstall(target: string | undefined, dryRun: boolean, remove: boolean): void {
   const cli = dryRun ? '<install-root>/src/cli.ts' : deployPackage();
+  if (target === 'antigravity') {
+    const plan = planAntigravityInstall(cli, process.execPath, remove);
+    if (dryRun) console.log(JSON.stringify(plan.after, null, 2));
+    else applyPlan(plan);
+    console.log(`[antigravity] ${plan.file}`);
+    return;
+  }
   for (const agent of agentsArg(target)) {
     const plan = planInstall(agent, cli, process.execPath, remove);
     const events = remove ? '(removed)' : HOOK_EVENTS[agent].join(', ');
@@ -132,6 +147,34 @@ async function cmdBackfill(agent: AgentName, path: string, args: string[]): Prom
   console.log(res.ok ? `sent ${res.sent} events` : `errors: ${JSON.stringify(res.errors.slice(0, 5))}`);
 }
 
+function cmdAudit(agent: string | undefined, path: string | undefined, args: string[]): void {
+  if (agent !== 'claude' && agent !== 'codex' && agent !== 'omp' && agent !== 'antigravity') throw new Error('audit expects claude, codex, omp, or antigravity');
+  if (!path || !existsSync(path)) throw new Error('audit expects an existing transcript path');
+  if (agent === 'antigravity') {
+    console.log(JSON.stringify({ agent, ...auditAntigravity(readJsonlFrom(path).entries) }, null, 2));
+    return;
+  }
+  const session = flag(args, 'session');
+  const sessionId = typeof session === 'string' ? session : basename(path, '.jsonl');
+  const turns = agent === 'omp'
+    ? parseOmpSession(readJsonlFrom(path).entries, sessionId)
+    : parseTranscript(agent, path, sessionId, { offset: 0, turnsBefore: 0 }).turns;
+  console.log(JSON.stringify({ agent, ...summarizeTurns(turns) }, null, 2));
+}
+
+async function cmdAuditLangfuse(agent: string | undefined, args: string[]): Promise<void> {
+  const target = agent && !agent.startsWith('--') ? agent : 'claude';
+  if (target !== 'claude' && target !== 'codex') throw new Error('audit-langfuse expects claude or codex credentials');
+  const cfg = loadConfig(target);
+  if (!cfg.publicKey || !cfg.secretKey) throw new Error('missing Langfuse keys');
+  const rawLimit = flag(args, 'limit');
+  const limit = rawLimit === undefined ? 20 : Number(rawLimit === true ? NaN : rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('--limit must be an integer from 1 to 100');
+  const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
+    timeoutMs: cfg.timeoutMs, logger: createLogger(logPath(cfg), false) });
+  console.log(JSON.stringify(await auditLangfuse(client, limit), null, 2));
+}
+
 async function main(): Promise<void> {
   const [cmd, a1, a2, ...rest] = process.argv.slice(2);
   const args = [a1, a2, ...rest].filter((x): x is string => x !== undefined);
@@ -143,6 +186,30 @@ async function main(): Promise<void> {
       return cmdInstall(a1?.startsWith('--') ? undefined : a1, !!flag(args, 'dry-run'), cmd === 'uninstall');
     case 'doctor':
       return cmdDoctor(a1?.startsWith('--') ? undefined : a1);
+    case 'antigravity-hook':
+      if (a1 === 'PreToolUse' || a1 === 'PostToolUse' || a1 === 'PreInvocation' || a1 === 'PostInvocation' || a1 === 'Stop') {
+        try {
+          const input = (await readStdin()).replace(/^﻿/, '').trim();
+          await runAntigravityHook(a1, input ? JSON.parse(input) : {});
+        } catch (err) {
+          console.error('Antigravity observer: ' + (err as Error).message);
+        }
+        console.log(JSON.stringify(a1 === 'PreToolUse' ? { decision: 'allow' } : {}));
+      }
+      return;
+    case 'export-otlp': {
+      if (a1 !== 'opencode') throw new Error('export-otlp expects opencode');
+      const config = loadOtlpConfig(process.env);
+      if (!config) throw new Error('OTLP exporter is not configured');
+      const events = JSON.parse(await readStdin());
+      if (!Array.isArray(events)) throw new Error('Expected a trace event array');
+      if (!(await exportOtlp(config, events, a1)).ok) process.exitCode = 1;
+      return;
+    }
+    case 'audit':
+      return cmdAudit(a1, a2, rest);
+    case 'audit-langfuse':
+      return cmdAuditLangfuse(a1, args);
     case 'backfill':
       return cmdBackfill(agentsArg(a1)[0], a2, rest);
     default:

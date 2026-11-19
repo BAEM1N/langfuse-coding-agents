@@ -1,6 +1,7 @@
 import { eventId, stableId } from './ids.ts';
 import type { IngestionEvent } from './langfuse.ts';
 import { sanitize, type SanitizeOptions } from './text.ts';
+import { analyzeTimeline } from './timeline.ts';
 import type { Turn } from './types.ts';
 
 export interface BatchOptions extends SanitizeOptions {
@@ -10,6 +11,7 @@ export interface BatchOptions extends SanitizeOptions {
   hostname: string;
   environment?: string;
   release?: string;
+  captureContent?: boolean;
 }
 
 export function traceIdFor(agentTag: string, sessionId: string, turnKey: string): string {
@@ -23,6 +25,8 @@ export function traceIdFor(agentTag: string, sessionId: string, turnKey: string)
  */
 export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
   const s = (v: unknown) => sanitize(v, opts);
+  const content = (v: unknown) => opts.captureContent === false ? undefined : s(v);
+  const { links, issues } = analyzeTimeline(turn);
   const now = new Date().toISOString();
   const traceId = traceIdFor(opts.agentTag, turn.sessionId, turn.key);
   const rootId = stableId(traceId, 'agent');
@@ -41,10 +45,10 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
       name,
       userId: opts.userId,
       sessionId: turn.sessionId,
-      input: s(turn.input),
-      output: s(turn.output),
+      input: content(turn.input),
+      output: content(turn.output),
       tags: [opts.agentTag, opts.hostname],
-      metadata: s({ ...turn.metadata, complete: turn.complete, turnIndex: turn.index, hostname: opts.hostname }),
+      metadata: s({ ...turn.metadata, complete: turn.complete, turnIndex: turn.index, hostname: opts.hostname, timelineIssueCount: issues.length }),
       environment: opts.environment,
       release: opts.release,
     }),
@@ -54,8 +58,8 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
       name: opts.agentLabel,
       startTime: turn.startTime,
       endTime: turn.complete ? turn.endTime : undefined,
-      input: s(turn.input),
-      output: s(turn.output),
+      input: content(turn.input),
+      output: content(turn.output),
       environment: opts.environment,
     }),
   ];
@@ -72,8 +76,8 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
           startTime: step.startTime,
           endTime: step.endTime,
           model: step.model,
-          input: s(step.input),
-          output: s(step.output),
+          input: content(step.input),
+          output: content(step.output),
           usageDetails: step.usage && Object.keys(step.usage).length ? step.usage : undefined,
           metadata: s(step.metadata),
           level: step.level,
@@ -82,6 +86,8 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
         }),
       );
     } else {
+      const link = links.get(step.key);
+      const generationId = (key?: string) => key ? stableId(traceId, 'generation', key) : undefined;
       events.push(
         ev('tool-create', {
           id,
@@ -90,9 +96,12 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
           name: step.name,
           startTime: step.startTime,
           endTime: step.endTime,
-          input: s(step.input),
-          output: s(step.output),
-          metadata: s(step.metadata),
+          input: content(step.input),
+          output: content(step.output),
+          metadata: s({ ...step.metadata, toolCallId: step.key,
+            issuedByObservationId: generationId(link?.issuedBy?.key),
+            consumedByObservationId: generationId(link?.consumedBy?.key),
+          }),
           level: step.isError ? 'ERROR' : undefined,
           statusMessage: step.isError ? 'tool returned an error' : undefined,
           environment: opts.environment,
@@ -101,7 +110,7 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
     }
   }
 
-  for (const e of turn.events) {
+  for (const e of [...turn.events, ...issues]) {
     events.push(
       ev('event-create', {
         id: stableId(traceId, 'event', e.key),
@@ -109,7 +118,7 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
         parentObservationId: rootId,
         name: e.name,
         startTime: e.time,
-        input: s(e.input),
+        input: content(e.input),
         metadata: s(e.metadata),
         level: e.level,
         environment: opts.environment,

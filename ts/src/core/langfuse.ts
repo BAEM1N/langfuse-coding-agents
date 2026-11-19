@@ -34,6 +34,16 @@ export class LangfuseClient {
     this.auth = `Basic ${Buffer.from(`${opts.publicKey}:${opts.secretKey}`).toString('base64')}`;
   }
 
+  async read<T>(path: string): Promise<T> {
+    const res = await fetch(this.opts.baseUrl + path, {
+      headers: { Authorization: this.auth },
+      redirect: 'error',
+      signal: AbortSignal.timeout(this.opts.timeoutMs),
+    });
+    if (!res.ok) throw new Error('Langfuse read failed (HTTP ' + res.status + ')');
+    return await res.json() as T;
+  }
+
   async ingest(events: IngestionEvent[]): Promise<IngestResult> {
     const result: IngestResult = { ok: true, sent: 0, errors: [] };
     for (const chunk of chunkBySize(events, MAX_BATCH_BYTES)) {

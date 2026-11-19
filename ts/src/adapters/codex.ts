@@ -61,7 +61,8 @@ interface TurnAcc {
   gens: GenerationStep[];
   pending?: GenAcc;
   tools: Map<string, ToolAcc>;
-  commands: Array<{ time: string; data: unknown }>;
+  commands: Array<{ callId?: string; time: string; data: unknown }>;
+  toolResults: NonNullable<Turn['toolResults']>;
   events: TurnEvent[];
   boundary: string; // time the next model call's input became ready
 }
@@ -136,6 +137,7 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
         gens: [],
         tools: new Map(),
         commands: [],
+        toolResults: [],
         events: [],
         boundary: ts,
       };
@@ -217,6 +219,7 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
             t.finalMessage = contentText(it.content);
           } else if (it.type === 'CommandExecution') {
             t.commands.push({
+              callId: it.call_id ?? it.id,
               time: ts,
               data: {
                 command: Array.isArray(it.parsed_cmd) && it.parsed_cmd[0]?.cmd ? it.parsed_cmd.map((c: any) => c.cmd).join(' && ') : it.command,
@@ -271,6 +274,7 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
         t.tools.set(key, { key, name, startTime: ts, input, commands: [] });
       } else if (typeof p.type === 'string' && p.type.endsWith('_output')) {
         const key = p.call_id ?? p.id;
+        if (typeof key === 'string') t.toolResults.push({ key, time: ts });
         const tool = key ? t.tools.get(key) : undefined;
         const text = outputText(p.output);
         if (tool) {
@@ -309,8 +313,13 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
 
 function finalize(t: TurnAcc, ctx: CodexContext, sessionId: string): Turn {
   for (const c of t.commands) {
-    const tool = [...t.tools.values()].find((x) => x.startTime <= c.time && (!x.endTime || c.time <= x.endTime));
+    const identified = c.callId ? t.tools.get(c.callId) : undefined;
+    const candidates = [...t.tools.values()].filter((tool) =>
+      tool.startTime <= c.time && (!tool.endTime || c.time <= tool.endTime));
+    const tool = identified ?? (candidates.length === 1 ? candidates[0] : undefined);
     if (tool) tool.commands.push(c.data);
+    else t.events.push({ key: `unlinked-command-${t.events.length}`, name: 'Unlinked command completion',
+      time: c.time, level: 'WARNING', metadata: { candidateCount: candidates.length } });
   }
   const tools: ToolStep[] = [...t.tools.values()].map((x) => ({
     kind: 'tool',
@@ -341,6 +350,7 @@ function finalize(t: TurnAcc, ctx: CodexContext, sessionId: string): Turn {
     complete: t.complete,
     steps,
     events: t.events,
+    toolResults: t.toolResults,
     offset: t.offset,
     metadata: {
       agent: 'codex',
