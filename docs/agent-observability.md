@@ -17,7 +17,7 @@ destination.
 | Google Antigravity CLI 1.5.11 | Prompt, tool arguments/result, final response | Input/output for both model calls | Native hook and transcript step index linked two generations and one tool in Langfuse and an OpenTelemetry Collector. |
 | Claude Code, OpenAI Codex CLI, OMP, OpenCode 1.x | Prompt, tool arguments/result, final response | Model input/output | Shared pipeline verified in Langfuse and an OpenTelemetry Collector. See the [runtime guide](../ts/README.md). |
 | GitHub Copilot CLI 1.0.114 | Prompt and tool arguments/result in hooks. Final response in JSONL; `agentStop` exposes a transcript path | `--usage-output-file` returned session aggregate input, output, cache read and cache write | The same `toolCallId` appeared before and after the tool and in JSONL. JSONL provided the model → tool → model sequence. Per-generation token attribution was unverified. [Copilot hooks](https://docs.github.com/en/copilot/reference/hooks-reference) |
-| Goose 1.60.1 | Native OTLP includes model messages and tool arguments/result with content capture enabled | Model input/output and cache fields in OTLP | Collector received model → tool → model spans. The native Langfuse route recorded GenAI attributes under span metadata. In the short Langfuse probe the last provider span had no end, final output, or final tokens. The [Langfuse audit](../ts/README.md) reports this as partial coverage. [Goose OpenTelemetry](https://goose-docs.ai/docs/guides/environment-variables/#observability-configuration) · [Goose Langfuse](https://goose-docs.ai/docs/tutorials/langfuse/) |
+| Goose 1.60.1 | Native OTLP includes model messages and tool arguments/result with content capture enabled | Model input/output and cache fields in OTLP | Collector → Langfuse OTLP preserved both model calls and tool order. Goose's separate direct Langfuse integration delivered partial final-call coverage in the short probe. [Goose OpenTelemetry](https://goose-docs.ai/docs/guides/environment-variables/#observability-configuration) · [Goose Langfuse](https://goose-docs.ai/docs/tutorials/langfuse/) |
 | LangChain Deep Agents SDK 0.7.40, Python | Human/AI/tool/AI messages and actual tool arguments, result and response | `usage_metadata` on both AI messages | Live LiteLLM-backed fixture matched tool call ID and completed the sequence in the SDK. Backend export needs a collector or callback integration. [Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview) |
 | Cursor CLI `2026.11.19-f005e9d` | Local probe stopped at authentication | Unverified | The documented hook surface includes tool hooks and `afterAgentResponse`. [Cursor hooks](https://cursor.com/docs/hooks) |
 | Kiro CLI 3.5.0 | Local probe stopped at authentication | Unverified | Use the V3 harness and record tool hooks with headless `stream-json` after login. [Kiro CLI](https://kiro.dev/docs/cli/) · [Kiro hooks](https://kiro.dev/docs/hooks/) |
@@ -28,6 +28,7 @@ destination.
 | --- | --- | --- |
 | Gemini CLI (legacy) | `BeforeModel`, streamed `AfterModel`, `BeforeTool`, and `AfterTool` | Keep the existing Langfuse integration for compatible deployments. Use `agy` for migrated personal accounts. [Google migration](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals) · [Gemini hook schemas](https://geminicli.com/docs/hooks/reference/) |
 | Qwen Code | Prompt, tool, batch, message stream, and stop/failure hooks | Use `tool_use_id` and provider `tool_call_id` when present. Use `submitted_prompt` for a fresh user prompt when available. Verify usage independently from the transcript or provider. [Qwen Code hooks](https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/) |
+| Deep Agents Code | Terminal agent built on the Deep Agents SDK | The SDK probe applies to the harness. Check the CLI's event and callback boundaries before reusing it as a CLI integration. [Deep Agents ecosystem](https://docs.langchain.com/oss/javascript/deepagents/overview) |
 | Factory Droid | Native OpenTelemetry in `droid.*` and GenAI formats | Prefer its native exporter. Configure message-content capture and verify how the selected format maps to the destination. [Droid telemetry reference](https://docs.factory.com/enterprise/telemetry/data-reference) |
 | OpenHands | Conversation trajectory and event API | Preserve source event IDs, tool action/observation pairs, and retries. Test model provider usage separately. [OpenHands trajectory API](https://docs.openhands.dev/api-reference/get-trajectory) |
 | Aider | Chat history, optional model message logging, and token reporting | Associate model usage with turns and test edit outcomes from the repo. Shell or MCP causality requires explicit evidence. [Aider options](https://aider.chat/docs/config/options.html) |
@@ -39,3 +40,13 @@ payload before adding a hook. For a hook-only agent, use the stable session and 
 IDs to join evidence across events. SDK agents can expose tool results and token
 usage through callbacks or middleware. Keep session-level counters at session scope
 when the source does not expose per-generation usage.
+
+### Goose to Langfuse through an OpenTelemetry Collector
+
+Point Goose's native OTLP exporter at your Collector. Configure the Collector's
+`otlp_http` exporter with `traces_endpoint` set to the Langfuse
+`/api/public/otel/v1/traces` URL and Basic auth from your project's keys. This route
+was verified with both model responses, the file read tool result, and model token
+usage. The [Langfuse audit](../ts/README.md#verify-call-order-and-monitoring-coverage)
+joins provider and tool events by ID and counts the provider calls once.
+[Langfuse OpenTelemetry endpoint](https://langfuse.com/integrations/native/opentelemetry)

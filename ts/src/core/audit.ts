@@ -21,7 +21,8 @@ interface Observation {
   output?: unknown;
   usageDetails?: Record<string, number>;
   metadata?: Record<string, unknown> & { kind?: string; toolCallId?: string | number;
-    issuedByObservationId?: string; consumedByObservationId?: string; sourceStartTime?: string; sourceEndTime?: string };
+    attributes?: Record<string, unknown>; issuedByObservationId?: string; consumedByObservationId?: string;
+    sourceStartTime?: string; sourceEndTime?: string };
 }
 
 interface StoredTrace {
@@ -64,17 +65,18 @@ function nativeToolParts(value: unknown, result: boolean): unknown[] {
 }
 
 const hasValue = (value: unknown) => value !== undefined && value !== null && value !== '' && value !== 'null';
+const nativeAttribute = (span: Observation | undefined, name: string) =>
+  span?.metadata?.attributes?.[name] ?? span?.metadata?.[name];
 
 export function auditStoredTrace(trace: StoredTrace) {
   const observations = Array.isArray(trace.observations) ? trace.observations : [];
   const root = observations.find((span) => span.type === 'AGENT')
-    ?? observations.find((span) => span.type === 'CHAIN' || span.metadata?.['gen_ai.operation.name'] === 'invoke_agent');
-  const nativeAgent = root?.metadata?.['gen_ai.agent.name'];
+    ?? observations.find((span) => span.type === 'CHAIN' || nativeAttribute(span, 'gen_ai.operation.name') === 'invoke_agent');
+  const nativeAgent = nativeAttribute(root, 'gen_ai.agent.name');
   // Goose emits a provider span and a chat wrapper for the same request. The
   // provider span holds the message parts needed for call-ID correlation.
-  const isGeneration = (span: Observation) => span.type === 'GENERATION'
-    || (span.metadata?.['gen_ai.operation.name'] === 'chat'
-      && (nativeAgent !== 'goose' || span.name === 'stream_response_from_provider'));
+  const isGeneration = (span: Observation) => (span.type === 'GENERATION' || nativeAttribute(span, 'gen_ai.operation.name') === 'chat')
+    && (nativeAgent !== 'goose' || span.name === 'stream_response_from_provider');
   const steps: Turn['steps'] = [];
   let toolsWithoutIds = 0;
   let reversedSpans = 0;
@@ -85,27 +87,28 @@ export function auditStoredTrace(trace: StoredTrace) {
   const generations = new Map(observations.filter(isGeneration).map((span) => [span.id, span]));
   for (const span of observations) {
     const isTool = span.type === 'TOOL' || span.metadata?.kind === 'tool'
-      || span.metadata?.['gen_ai.operation.name'] === 'execute_tool';
+      || nativeAttribute(span, 'gen_ai.operation.name') === 'execute_tool';
     const sourceTiming = span.metadata?.kind === 'tool';
     const started = sourceTiming ? span.metadata?.sourceStartTime : span.startTime;
     const ended = sourceTiming ? span.metadata?.sourceEndTime : span.endTime;
     if (started && ended && Date.parse(ended) < Date.parse(started)) reversedSpans++;
     if (isGeneration(span)) {
-      const nativeInput = span.metadata?.['gen_ai.input.messages'];
-      const nativeOutput = span.metadata?.['gen_ai.output.messages'];
+      const input = span.input ?? nativeAttribute(span, 'gen_ai.input.messages');
+      const output = span.output ?? nativeAttribute(span, 'gen_ai.output.messages');
       coverage.modelCalls++;
-      coverage.modelInputs += Number(hasValue(span.input ?? nativeInput));
-      coverage.modelOutputs += Number(hasValue(span.output ?? nativeOutput));
-      coverage.modelTokenUsage += Number(hasValue(span.usageDetails?.input ?? span.metadata?.['gen_ai.usage.input_tokens'])
-        && hasValue(span.usageDetails?.output ?? span.metadata?.['gen_ai.usage.output_tokens']));
+      coverage.modelInputs += Number(hasValue(input));
+      coverage.modelOutputs += Number(hasValue(output));
+      coverage.modelTokenUsage += Number(hasValue(span.usageDetails?.input ?? nativeAttribute(span, 'gen_ai.usage.input_tokens'))
+        && hasValue(span.usageDetails?.output ?? nativeAttribute(span, 'gen_ai.usage.output_tokens')));
       steps.push({ kind: 'generation', key: span.id, name: 'generation', startTime: span.startTime,
-        endTime: span.endTime ?? span.startTime, input: span.input != null ? decode(span.input) : nativeToolParts(nativeInput, true),
-        output: span.output != null ? decode(span.output) : nativeToolParts(nativeOutput, false) });
+        endTime: span.endTime ?? span.startTime,
+        input: nativeAgent === 'goose' || span.input == null ? nativeToolParts(input, true) : decode(input),
+        output: nativeAgent === 'goose' || span.output == null ? nativeToolParts(output, false) : decode(output) });
     } else if (isTool) {
       tools++;
-      coverage.toolInputs += Number(hasValue(span.input ?? span.metadata?.['gen_ai.tool.call.arguments']));
-      coverage.toolOutputs += Number(hasValue(span.output ?? span.metadata?.['gen_ai.tool.call.result']));
-      const callId = span.metadata?.toolCallId ?? span.metadata?.['gen_ai.tool.call.id'];
+      coverage.toolInputs += Number(hasValue(span.input ?? nativeAttribute(span, 'gen_ai.tool.call.arguments')));
+      coverage.toolOutputs += Number(hasValue(span.output ?? nativeAttribute(span, 'gen_ai.tool.call.result')));
+      const callId = span.metadata?.toolCallId ?? nativeAttribute(span, 'gen_ai.tool.call.id');
       if ((typeof callId !== 'string' && typeof callId !== 'number') || callId === '') {
         toolsWithoutIds++;
         continue;
