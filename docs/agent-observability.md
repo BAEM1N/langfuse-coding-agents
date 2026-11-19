@@ -8,6 +8,14 @@ synthetic files and ordinary agent execution paths.
 
 ## Live verification
 
+On November 19, 2026, Claude Code, OpenAI Codex CLI, OMP, Antigravity CLI, and
+OpenCode 1.x each ran a file-read probe on macOS (Apple Silicon) and Debian 13
+(ARM64). For each run, Langfuse and the Grafana Tempo data source returned
+matching model input and output token counts, the prompt, tool arguments and
+result, and final response. The model and tool timestamps agreed with the tool
+call IDs. Claude Code, Codex, OMP, and OpenCode used LiteLLM. Antigravity used
+the Gemini API.
+
 Results below were verified on Windows on November 19, 2026. A signal observed in
 an event stream or SDK result is listed separately from a signal verified at a trace
 destination.

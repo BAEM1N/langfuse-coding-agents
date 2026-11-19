@@ -39,6 +39,11 @@ extension discovery applies to normal invocations. OpenCode uses the 1.x plugin
 surface. For SDK applications, select `--agents deepagents --python /path/to/python`
 and [add the callback to the run configuration](../tools/deepagents/).
 
+For a headless Antigravity CLI run using the Gemini API, set
+`"modelProvider": "gemini"` in `~/.gemini/antigravity-cli/settings.json` and
+export `GEMINI_API_KEY` in the shell that launches `agy`.
+[Antigravity CLI authentication](https://antigravity.google/docs/install?tab=cli#using-a-gemini-api-key)
+
 ## Send to Tempo and Langfuse
 
 The [Collector example](examples/collector.yaml) sends the common OTLP copy to Tempo
