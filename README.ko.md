@@ -54,7 +54,7 @@ Python 경로의 Langfuse SDK 요구사항은 [SDK 호환성](#sdk-호환성)을
 
 ## 빠른 시작
 
-Node.js 22.18 이상과 관측할 코딩 에이전트를 설치합니다. OpenCode 1.x를 쓸 때는 `venv`를 지원하는 Python도 필요합니다. Windows에서 Copilot CLI 명령 훅을 쓰려면 PowerShell 7을 사용하세요.
+Node.js 22.18 이상과 관측할 코딩 에이전트를 설치합니다. OpenCode 1.x에는 `venv`와 `ensurepip`가 있는 Python 3.10 이상이 필요합니다. 기본 Python이 더 오래된 버전이면 `--python /path/to/python3`으로 경로를 지정하세요. Windows에서 Copilot CLI 명령 훅을 쓰려면 PowerShell 7을 사용하세요.
 
 ```sh
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git

@@ -75,7 +75,7 @@ export function planInstall(agent: AgentName, cliPath: string, nodePath = proces
     const file = join(home, 'settings.json');
     const before = readJson(file);
     const entry = {
-      hooks: [{ type: 'command', command: fwd(nodePath), args: [fwd(cliPath), 'hook', 'claude'], async: true, timeout: 30 }],
+      hooks: [{ type: 'command', command: fwd(nodePath), args: [fwd(cliPath), 'hook', 'claude'], timeout: 30 }],
     };
     const hooks = mergeHooks(before.hooks ?? {}, remove ? [] : HOOK_EVENTS.claude, entry);
     const after = { ...before, hooks };

@@ -61,7 +61,7 @@ CLI adapter remains available for existing compatible deployments. [Google migra
 
 ## Quick start
 
-Install Node.js 22.18 or later and the coding agents you want to trace. OpenCode 1.x also needs Python with `venv` support. On Windows, use PowerShell 7 for Copilot CLI command hooks.
+Install Node.js 22.18 or later and the coding agents you want to trace. OpenCode 1.x needs Python 3.10 or later with `venv` and `ensurepip`. Use `--python /path/to/python3` if the default interpreter is older. On Windows, use PowerShell 7 for Copilot CLI command hooks.
 
 ```sh
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,27 @@ if (options.help) {
 const agents = options.agents.split(',').map(agent => agent.trim()).filter(Boolean);
 const supported = new Set(['claude', 'codex', 'omp', 'antigravity', 'copilot', 'opencode', 'deepagents']);
 if (agents.some(agent => !supported.has(agent))) throw Error('Unknown agent in --agents list');
+
+const usablePython = (cmd, check) => spawnSync(cmd, ['-c', check], { stdio: 'ignore' }).status === 0;
+const versionCheck = 'import sys; raise SystemExit(sys.version_info < (3, 10))';
+const selectPython = (needVenv = false) => {
+  const candidates = options.python ? [options.python] : ['python3', 'python'];
+  const check = (needVenv ? 'import venv, ensurepip; ' : 'import pip; ') + versionCheck;
+  const available = candidates.find(cmd => usablePython(cmd, check));
+  if (!available) {
+    throw Error(`Python 3.10+ ${needVenv ? 'with venv and ensurepip' : 'with pip'} is required. Pass --python with its path.`);
+  }
+  return available;
+};
+
+const opencodeHome = agents.includes('opencode') ? agentHome('opencode') : undefined;
+const venvDirectory = opencodeHome && join(opencodeHome, 'langfuse-venv');
+const venvPython = venvDirectory && (process.platform === 'win32'
+  ? join(venvDirectory, 'Scripts', 'python.exe') : join(venvDirectory, 'bin', 'python'));
+const recreateVenv = venvPython && !usablePython(venvPython, versionCheck);
+const venvSource = recreateVenv ? selectPython(true) : undefined;
+const deepAgentsPython = agents.includes('deepagents') ? selectPython() : undefined;
+
 let name = options.name?.trim();
 if (name === undefined && process.stdin.isTTY) {
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
@@ -78,12 +99,6 @@ const apply = plan => {
   if (JSON.stringify(plan.before) !== JSON.stringify(plan.after)) applyPlan(plan);
   console.log(`${plan.agent}: ${plan.file}`);
 };
-const python = () => {
-  const available = [options.python, 'python3', 'python'].filter(Boolean)
-    .find(cmd => spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0);
-  if (!available) throw Error('An existing Python interpreter is required. Pass --python with its path.');
-  return available;
-};
 for (const agent of new Set(agents)) {
   if (agent === 'claude' || agent === 'codex') apply(planInstall(agent, deployedCli));
   if (agent === 'antigravity') apply(planAntigravityInstall(deployedCli));
@@ -100,21 +115,25 @@ for (const agent of new Set(agents)) {
     console.log('omp: user extension');
   }
   if (agent === 'opencode') {
-    const home = agentHome('opencode');
-    const directory = join(home, 'langfuse-venv');
-    const venv = process.platform === 'win32' ? join(directory, 'Scripts', 'python.exe') : join(directory, 'bin', 'python');
-    if (!existsSync(venv)) {
-      execFileSync(python(), ['-m', 'venv', directory], { stdio: 'inherit' });
-      execFileSync(venv, ['-m', 'pip', 'install', 'langfuse>=4,<5'], { stdio: 'inherit' });
+    if (recreateVenv) {
+      if (existsSync(venvDirectory)) {
+        const backup = venvDirectory + '.bak-' + Date.now();
+        renameSync(venvDirectory, backup);
+        console.log(`Backed up the previous OpenCode virtual environment to ${backup}`);
+      }
+      execFileSync(venvSource, ['-m', 'venv', venvDirectory], { stdio: 'inherit' });
+    }
+    if (!usablePython(venvPython, 'import langfuse')) {
+      execFileSync(venvPython, ['-m', 'pip', 'install', 'langfuse>=4,<5'], { stdio: 'inherit' });
     }
     for (const [sub, file] of [['plugins', 'langfuse_plugin.js'], ['hooks', 'langfuse_hook.py']]) {
-      mkdirSync(join(home, sub), { recursive: true });
-      copyFileSync(join(repo, 'tools', 'opencode', file), join(home, sub, file));
+      mkdirSync(join(opencodeHome, sub), { recursive: true });
+      copyFileSync(join(repo, 'tools', 'opencode', file), join(opencodeHome, sub, file));
     }
     console.log('opencode: user plugin');
   }
   if (agent === 'deepagents') {
-    execFileSync(python(), ['-m', 'pip', 'install', join(repo, 'tools', 'deepagents')], { stdio: 'inherit' });
+    execFileSync(deepAgentsPython, ['-m', 'pip', 'install', join(repo, 'tools', 'deepagents')], { stdio: 'inherit' });
     console.log('deepagents: attach DeepAgentsObserver to SDK invocations');
   }
 }

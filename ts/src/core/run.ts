@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
 import { findCodexRollout, parseCodexRollout, type CodexContext } from '../adapters/codex.ts';
 import { parseClaudeTranscript } from '../adapters/claude.ts';
 import { turnToEvents, type BatchOptions } from './batch.ts';
@@ -161,7 +162,19 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
   let st: TranscriptState | undefined;
   if (transcript) {
     st = state.transcripts[transcript] ?? { offset: 0, turnsBefore: 0, updatedAt: '' };
-    const parsed = parseTranscript(agent, transcript, sessionId, st);
+    let parsed = parseTranscript(agent, transcript, sessionId, st);
+    if (agent === 'claude' && event === 'Stop') {
+      // The Stop event can arrive before the final model response reaches the transcript.
+      const finalText = p.last_assistant_message?.trim();
+      const deadline = performance.now() + 750;
+      while (performance.now() < deadline) {
+        const turn = parsed.turns.at(-1);
+        const last = turn?.steps.at(-1);
+        if (last?.kind === 'generation' && last.usage && (!finalText || turn?.output === finalText)) break;
+        await wait(75);
+        parsed = parseTranscript(agent, transcript, sessionId, st);
+      }
+    }
     turns = parsed.turns;
     context = parsed.context;
   } else {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -9,7 +9,8 @@ import { turnToEvents } from '../src/core/batch.ts';
 import { loadDotenv } from '../src/core/config.ts';
 import { stableId } from '../src/core/ids.ts';
 import { readJsonlFrom } from '../src/core/jsonl.ts';
-import { normalizePayload } from '../src/core/run.ts';
+import { nullLogger } from '../src/core/log.ts';
+import { normalizePayload, runHook } from '../src/core/run.ts';
 import { redact, sanitize } from '../src/core/text.ts';
 import { mergeHooks } from '../src/install.ts';
 
@@ -58,6 +59,40 @@ test('turnToEvents: deterministic ids, hierarchy and redaction', () => {
   assert.equal(a[0].body.name, 'Claude Code - Turn 1');
   assert.equal(a[0].body.userId, 'u');
   assert.ok(!JSON.stringify(a).includes('11111111-2222'), 'secret must not be sent');
+});
+
+test('Claude Stop waits for the model call recorded after the tool result', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'lah-claude-stop-'));
+  const path = join(home, 'transcript.jsonl');
+  const rows = readFileSync(new URL('./fixtures/claude-transcript.jsonl', import.meta.url), 'utf8').split(/\r?\n/);
+  const env = {
+    CLAUDE_CONFIG_DIR: home,
+    TRACE_TO_LANGFUSE: 'false',
+    CODING_AGENT_OTLP_ENABLED: 'true',
+    CODING_AGENT_OTLP_TRACES_ENDPOINT: 'https://collector.example.test/v1/traces',
+    CODING_AGENT_COLLECTOR_LAUNCHER: '',
+  };
+  const previous = new Map(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  const sent: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    sent.push(String(init?.body));
+    return new Response('{}');
+  });
+  writeFileSync(path, rows.slice(0, 5).join('\n') + '\n');
+  const timer = setTimeout(() => appendFileSync(path, rows.slice(5, 8).join('\n') + '\n'), 30);
+  t.after(() => {
+    clearTimeout(timer);
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(home, { force: true, recursive: true });
+  });
+  const result = await runHook('claude', { hook_event_name: 'Stop', session_id: 'diagnostic', transcript_path: path }, nullLogger);
+  assert.equal(result.errors, 0);
+  assert.equal(sent.length, 1);
+  const spans: { kind: number }[] = JSON.parse(sent[0]).resourceSpans[0].scopeSpans[0].spans;
+  assert.equal(spans.filter(span => span.kind === 3).length, 2);
 });
 
 test('readJsonlFrom ignores a trailing partial line', () => {

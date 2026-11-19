@@ -6,7 +6,7 @@ Claude Code、Codex CLI、Oh My Pi（OMP）、Antigravity CLI、OpenCode 1.x、G
 
 ## Langfuse の設定
 
-Node.js 22.18 以上と、観測対象のエージェントを用意します。OpenCode を選ぶ場合は `venv` に対応する Python も必要です。Windows で Copilot CLI のコマンドフックを実行する場合は PowerShell 7 を使用します。
+Node.js 22.18 以上と、観測対象のエージェントを用意します。OpenCode には `venv` と `ensurepip` を備えた Python 3.10 以上が必要です。既定の Python が古い場合は `--python /path/to/python3` で指定します。Windows で Copilot CLI のコマンドフックを実行する場合は PowerShell 7 を使用します。
 
 ```sh
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git

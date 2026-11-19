@@ -6,7 +6,7 @@
 
 ## 配置 Langfuse
 
-先安装 Node.js 22.18 或更高版本及要观测的编程代理。OpenCode 还需要支持 `venv` 的 Python。在 Windows 上使用 Copilot CLI 命令钩子时，请使用 PowerShell 7。
+先安装 Node.js 22.18 或更高版本及要观测的编程代理。OpenCode 需要 Python 3.10 或更高版本，并支持 `venv` 和 `ensurepip`。如果默认 Python 版本较旧，请用 `--python /path/to/python3` 指定解释器。在 Windows 上使用 Copilot CLI 命令钩子时，请使用 PowerShell 7。
 
 ```sh
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git

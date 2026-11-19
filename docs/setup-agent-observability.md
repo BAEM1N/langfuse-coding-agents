@@ -1,8 +1,10 @@
 # Install coding agent hooks on Windows, macOS, and Linux
 
-Use Node.js 22.18 or later. Install the agents you plan to trace. OpenCode needs an
-existing Python with `venv` support. Select the Python interpreter used by the Deep
-Agents application when installing its callback.
+Use Node.js 22.18 or later. Install the agents you plan to trace. OpenCode needs
+Python 3.10 or later with `venv` and `ensurepip`. macOS may provide an older
+system Python. Pass `--python /path/to/python3` if needed. On Debian, install the
+`python3-venv` package for the system interpreter. Select the Python interpreter
+used by the Deep Agents application when installing its callback.
 
 ## Install hooks and choose a trace identity
 
