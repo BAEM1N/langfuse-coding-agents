@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { availableParallelism, homedir, hostname, platform, release, arch, totalmem } from 'node:os';
+import { basename, join } from 'node:path';
 import type { TraceAgentName } from './types.ts';
 import { loadOtlpConfig, type OtlpConfig } from './otlp.ts';
 
@@ -13,6 +13,7 @@ export interface Config {
   baseUrl: string;
   userId: string;
   hostname: string;
+  device?: Record<string, string | number>;
   environment?: string;
   maxChars: number;
   redact: boolean;
@@ -21,6 +22,7 @@ export interface Config {
   otlp?: OtlpConfig;
   otlpError?: string;
   collectorLauncher?: string;
+  nodeExecutable?: string;
 }
 
 export function agentHome(agent: TraceAgentName): string {
@@ -28,12 +30,25 @@ export function agentHome(agent: TraceAgentName): string {
   if (agent === 'antigravity') return join(homedir(), '.gemini', 'antigravity-cli');
   if (agent === 'omp') return process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp', 'agent');
   if (agent === 'copilot') return process.env.COPILOT_HOME || join(homedir(), '.copilot');
+  if (agent === 'opencode') return join(homedir(), '.config', 'opencode');
   if (agent === 'deepagents') return join(homedir(), '.config', 'deepagents-observability');
   return process.env.CODEX_HOME || join(homedir(), '.codex');
 }
 
 export function sharedConfigDir(): string {
   return join(homedir(), '.config', 'langfuse-agent-hooks');
+}
+
+export function defaultUserId(): string {
+  return basename(homedir()) || 'local-user';
+}
+
+export function deviceAttributes(env: NodeJS.ProcessEnv, host: string): Config['device'] {
+  if (env.CODING_AGENT_DEVICE_METADATA === 'false') return;
+  const attrs: NonNullable<Config['device']> = { 'host.name': host, 'os.type': platform(), 'os.version': release(),
+    'host.arch': arch(), 'host.cpu.logical_count': availableParallelism(), 'host.memory.bytes': totalmem() };
+  if (env.CODING_AGENT_DEVICE_LABEL) attrs['coding_agent.device.label'] = env.CODING_AGENT_DEVICE_LABEL;
+  return attrs;
 }
 
 /** Minimal .env parser. Never overrides variables already set in the environment. */
@@ -82,18 +97,21 @@ export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = proce
   let otlp: OtlpConfig | undefined;
   let otlpError: string | undefined;
   try { otlp = loadOtlpConfig(env); } catch { otlpError = 'Invalid OTLP endpoint, protocol, or headers'; }
+  const host = pick(env, 'CC_LANGFUSE_HOSTNAME', 'LANGFUSE_HOOK_HOSTNAME') ?? hostname();
   return {
     agent,
     agentHome: home,
     otlp,
     otlpError,
     collectorLauncher: env.CODING_AGENT_COLLECTOR_LAUNCHER,
+    nodeExecutable: env.CODING_AGENT_NODE_EXECUTABLE,
     enabled: (pick(env, 'TRACE_TO_LANGFUSE') ?? '').toLowerCase() === 'true',
     publicKey: pick(env, 'CC_LANGFUSE_PUBLIC_KEY', 'LANGFUSE_PUBLIC_KEY'),
     secretKey: pick(env, 'CC_LANGFUSE_SECRET_KEY', 'LANGFUSE_SECRET_KEY'),
     baseUrl: (pick(env, 'CC_LANGFUSE_BASE_URL', 'LANGFUSE_BASE_URL', 'LANGFUSE_HOST') ?? 'https://cloud.langfuse.com').replace(/\/+$/, ''),
-    userId: pick(env, 'CC_LANGFUSE_USER_ID', 'LANGFUSE_USER_ID') ?? `${agent}-user`,
-    hostname: pick(env, 'CC_LANGFUSE_HOSTNAME', 'LANGFUSE_HOOK_HOSTNAME') ?? hostname(),
+    userId: pick(env, 'CC_LANGFUSE_USER_ID', 'CODING_AGENT_USER_NAME', 'LANGFUSE_USER_ID') ?? defaultUserId(),
+    hostname: host,
+    device: deviceAttributes(env, host),
     environment: pick(env, 'LANGFUSE_TRACING_ENVIRONMENT'),
     maxChars: Number.isFinite(maxChars) ? maxChars : 20000,
     redact: (pick(env, 'LANGFUSE_HOOK_REDACT') ?? 'true').toLowerCase() !== 'false',

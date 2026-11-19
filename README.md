@@ -13,6 +13,7 @@ the model requests around it. Export to [Langfuse](https://langfuse.com), an
 [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/), or both.
 
 - [Installation and OTLP configuration](ts/README.md)
+- [Windows, macOS, and Linux setup with Grafana Tempo](docs/setup-agent-observability.md)
 - [Agent compatibility and live verification](docs/agent-observability.md)
 - [Capture controls and privacy](#security--privacy)
 

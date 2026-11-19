@@ -1,0 +1,91 @@
+# Install coding agent hooks on Windows, macOS, and Linux
+
+Use Node.js 22.18 or later. Install the agents you plan to trace. OpenCode needs an
+existing Python with `venv` support. Select the Python interpreter used by the Deep
+Agents application when installing its callback.
+
+## Install hooks and choose a trace identity
+
+Run from the repository root. Supply Langfuse credentials through the process
+environment or an existing local Langfuse `.env`. The setup copies existing keys
+to shared local settings when those keys are missing there.
+
+```powershell
+# Windows, PowerShell 7
+./scripts/setup.ps1 --agents 'claude,codex,omp,antigravity,copilot,opencode'
+```
+
+```sh
+# macOS or Linux
+sh scripts/setup.sh --agents claude,codex,omp,antigravity,copilot,opencode
+```
+
+On a terminal the script asks for a trace user name. A blank answer uses the last
+component of the user's home directory. `--name` sets it explicitly for automation.
+Use `--device` for a machine label and `--environment` for labels such as `local` or
+`ci`. The shared configuration lives at `~/.config/langfuse-agent-hooks/.env`.
+
+The shared runtime adds hostname, OS type and release, architecture, logical CPU
+count, and RAM to Langfuse trace metadata and OTLP resource attributes. Each adapter
+reports the fields available in its runtime. `CODING_AGENT_DEVICE_METADATA=false`
+disables the shared runtime's additional hardware attributes. `--capture-content`
+enables bodies for sources that support configurable capture. Native exporters can
+have their own capture and device metadata settings.
+
+New or changed Codex hook definitions require review in `/hooks`. OMP's native
+extension discovery applies to normal invocations. OpenCode uses the 1.x plugin
+surface. For SDK applications, select `--agents deepagents --python /path/to/python`
+and [add the callback to the run configuration](../tools/deepagents/).
+
+## Send to Tempo and Langfuse
+
+The [Collector example](examples/collector.yaml) sends the common OTLP copy to Tempo
+and writes a rotating local file. The common hooks send directly to Langfuse. Goose
+uses a separate Collector receiver, which sends to both Langfuse and Tempo.
+
+Supply an existing OpenTelemetry Collector binary with the `file`, `resource`, and
+`otlp_http` components. `--tempo` accepts the complete Tempo OTLP HTTP URL.
+
+```powershell
+./scripts/setup.ps1 --collector 'C:\path\otelcol.exe' --tempo http://127.0.0.1:14328/v1/traces --capture-content
+```
+
+```sh
+sh scripts/setup.sh --collector /path/to/otelcol --tempo http://127.0.0.1:14328/v1/traces --capture-content
+```
+
+Restart an existing Collector after changing its YAML. The shared hooks can start
+the deployed example Collector on demand. Follow the [Goose exporter setup](agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector)
+to route native Goose telemetry through port `14320`.
+
+For a loopback dashboard with existing Grafana and Tempo binaries:
+
+```sh
+node scripts/start-grafana.mjs --tempo /path/to/tempo --grafana /path/to/grafana-home
+```
+
+On Windows, pass the path to `tempo.exe` and the Grafana archive's extracted home
+directory. The launcher binds both services to loopback. `--anonymous-viewer` enables
+local read-only dashboard access without a login.
+
+For manual setup, start Tempo with
+[tempo.yaml](examples/grafana/tempo.yaml), and set Grafana's provisioning path to
+[`examples/grafana/provisioning`](examples/grafana/provisioning). Set
+`CODING_AGENT_GRAFANA_DASHBOARDS` in Grafana's environment to the absolute path of
+[`examples/grafana/dashboards`](examples/grafana/dashboards), then restart Grafana.
+The Tempo data source queries port `13200`. Open the **Coding agent traces** dashboard,
+then use a trace ID to inspect individual model and tool spans. `coding_agent.input`
+and `coding_agent.output` hold the shared exporters' captured bodies. Native exporters
+such as Goose use `gen_ai.input.messages`, `gen_ai.output.messages`, and tool attributes.
+
+## Agent setup checklist
+
+1. Read the user's existing agent and exporter configuration. Reuse configured
+   credentials in process memory and preserve unrelated user hooks and plugins.
+2. Ask for the trace user name. An empty answer selects the home-folder default.
+3. Run the platform setup wrapper for the selected agents. Check Codex hook trust
+   and whether each installed version supports the indicated integration.
+4. Run a read-only synthetic file probe containing a unique marker. Look up its
+   trace in the configured Langfuse project and in Tempo through Grafana.
+5. Verify the prompt, tool arguments/result, final response, per-call token fields,
+   tool call ID, and timing. Report coverage gaps at the affected layer.

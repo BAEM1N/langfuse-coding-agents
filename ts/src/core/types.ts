@@ -2,7 +2,7 @@
 // transcript into Turn objects; core/batch.ts turns them into Langfuse events.
 
 export type AgentName = 'claude' | 'codex';
-export type TraceAgentName = AgentName | 'omp' | 'antigravity' | 'copilot' | 'deepagents';
+export type TraceAgentName = AgentName | 'omp' | 'antigravity' | 'copilot' | 'deepagents' | 'opencode';
 
 export type Level = 'DEBUG' | 'DEFAULT' | 'WARNING' | 'ERROR';
 

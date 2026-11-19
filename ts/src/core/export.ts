@@ -22,7 +22,8 @@ export async function exportEvents(config: Config, events: IngestionEvent[], log
       const otlp = config.otlp;
       const deliver = async () => {
         if (config.collectorLauncher) {
-          try { await launch(process.execPath, [config.collectorLauncher], { timeout: 4000, windowsHide: true }); }
+          const node = config.nodeExecutable || (process.versions.bun ? 'node' : process.execPath);
+          try { await launch(node, [config.collectorLauncher], { timeout: 4000, windowsHide: true }); }
           catch { return { ok: false, sent: 0, errors: [{ message: 'Local Collector did not start' }] }; }
         }
         return exportOtlp(otlp, completed, config.agent);

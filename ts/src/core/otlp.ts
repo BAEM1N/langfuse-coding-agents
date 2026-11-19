@@ -87,6 +87,7 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pi
       name: String(body.name ?? operation), kind: generation ? 3 : 1, startTimeUnixNano: epoch(start), endTimeUnixNano: epoch(end),
       status: { code: body.level === 'ERROR' ? 2 : 0 }, links,
       attributes: attributes({ 'gen_ai.operation.name': operation, 'gen_ai.agent.name': agent,
+        'user.id': generation || tool ? undefined : trace?.userId,
         'gen_ai.conversation.id': trace?.sessionId, 'gen_ai.request.model': body.model,
         'gen_ai.tool.name': tool ? body.name : undefined,
         'gen_ai.tool.call.id': tool && meta?.toolCallId !== undefined ? String(meta.toolCallId) : undefined,
@@ -104,7 +105,10 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pi
       }),
     }];
   });
-  return { resourceSpans: [{ resource: { attributes: attributes({ 'service.name': options.serviceName ?? 'coding-agent-' + agent }) },
+  const sample = traces.values().next().value;
+  const metadata = sample?.metadata as { device?: Record<string, unknown> } | undefined;
+  return { resourceSpans: [{ resource: { attributes: attributes({ ...metadata?.device,
+    'service.name': options.serviceName ?? 'coding-agent-' + agent, 'deployment.environment.name': sample?.environment }) },
     scopeSpans: [{ scope: { name: 'langfuse-coding-agents' }, spans }] }] };
 }
 

@@ -17,6 +17,7 @@ const LABELS: Record<TraceAgentName, { label: string; tag: string }> = {
   antigravity: { label: 'Antigravity', tag: 'antigravity' },
   copilot: { label: 'GitHub Copilot CLI', tag: 'copilot' },
   deepagents: { label: 'Deep Agents', tag: 'deepagents' },
+  opencode: { label: 'OpenCode', tag: 'opencode' },
 };
 
 /** Accept both snake_case and camelCase payload keys. */
@@ -67,6 +68,7 @@ export function batchOptions(cfg: Config): BatchOptions {
     agentTag: LABELS[cfg.agent].tag,
     userId: cfg.userId,
     hostname: cfg.hostname,
+    device: cfg.device,
     environment: cfg.environment,
     maxChars: cfg.maxChars,
     redact: cfg.redact,

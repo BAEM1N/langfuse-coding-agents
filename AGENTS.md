@@ -1,5 +1,10 @@
 # Agent Setup Guide — langfuse-coding-agents (monorepo)
 
+Use the [cross-platform setup and verification guide](docs/setup-agent-observability.md)
+for the shared Node runtime, OpenTelemetry, and the Grafana Tempo dashboard. Ask
+for the display name and use the home-folder basename if the user leaves it empty.
+Use the instructions below for the standalone Python integrations.
+
 This file briefs an AI coding agent (Claude Code, Codex, Cursor, Gemini CLI, etc.) on how to wire **Langfuse** tracing into a user's AI coding tool stack from this single monorepo.
 
 It supersedes the five previously-standalone repos. Every supported tool now lives under `tools/<tool>/` and shares the same Langfuse 4.x compatibility layer.

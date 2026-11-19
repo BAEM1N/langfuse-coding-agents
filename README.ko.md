@@ -11,6 +11,7 @@ Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode�
 [Langfuse](https://langfuse.com), OpenTelemetry Collector 또는 두 곳으로 보낼 수 있습니다.
 
 - [공통 훅 설치와 OTLP 설정](ts/README.md)
+- [Windows·macOS·Linux 설치 및 Grafana Tempo 설정](docs/setup-agent-observability.md)
 - [에이전트 지원 범위와 실측 결과](docs/agent-observability.md)
 
 ---

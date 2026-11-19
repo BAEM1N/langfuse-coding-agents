@@ -51,13 +51,18 @@ test('OTLP preserves causal links and excludes captured bodies by default', () =
   assert.equal(generation.kind, 'generation');
   generation.usage = { input: 10, input_cached_tokens: 4, output: 2 };
   const events = turnToEvents(turn, { agentLabel: 'OMP', agentTag: 'oh-my-pi', userId: 'user',
-    hostname: 'test', maxChars: 100, redact: true });
+    hostname: 'test', device: { 'host.arch': 'x64', 'host.cpu.logical_count': 8 }, environment: 'local',
+    maxChars: 100, redact: true });
   const config = loadOtlpConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.example/otlp',
     OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'routing=test%20project' });
   assert.ok(config);
   assert.equal(config.endpoint, 'https://collector.example/otlp/v1/traces');
   assert.equal(config.headers.get('routing'), 'test project');
-  const [root, first, tool, parallel, next] = otlpPayload(events, 'omp', config).resourceSpans[0].scopeSpans[0].spans;
+  const resource = otlpPayload(events, 'omp', config).resourceSpans[0];
+  const [root, first, tool, parallel, next] = resource.scopeSpans[0].spans;
+  assert.ok(resource.resource.attributes.some(attribute => attribute.key === 'host.arch'));
+  assert.ok(resource.resource.attributes.some(attribute => attribute.key === 'deployment.environment.name'));
+  assert.ok(root.attributes.some(attribute => attribute.key === 'user.id'));
   assert.equal(tool.traceId, root.traceId);
   assert.match(tool.spanId, /^[0-9a-f]{16}$/);
   assert.deepEqual(tool.links.map((link) => link.spanId), [first.spanId, next.spanId]);
@@ -150,7 +155,8 @@ test('OMP uses the active branch and pairs provider tool results by ID', () => {
 test('OMP extension exports a completed turn without prompt or tool bodies', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'langfuse-omp-test-'));
   const env = { PI_CODING_AGENT_DIR: home, TRACE_TO_LANGFUSE: 'true', LANGFUSE_BASE_URL: 'https://example.test',
-    CC_LANGFUSE_BASE_URL: 'https://example.test', CC_LANGFUSE_PUBLIC_KEY: 'test', CC_LANGFUSE_SECRET_KEY: 'test' };
+    CC_LANGFUSE_BASE_URL: 'https://example.test', CC_LANGFUSE_PUBLIC_KEY: 'test', CC_LANGFUSE_SECRET_KEY: 'test',
+    CODING_AGENT_OTLP_ENABLED: 'false', LANGFUSE_HOOK_CAPTURE_CONTENT: 'false' };
   const before = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   t.after(() => {
     for (const [key, value] of Object.entries(before)) {

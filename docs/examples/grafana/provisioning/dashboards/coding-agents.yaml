@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: Coding Agent Observability
+    type: file
+    allowUiUpdates: false
+    options:
+      path: ${CODING_AGENT_GRAFANA_DASHBOARDS}

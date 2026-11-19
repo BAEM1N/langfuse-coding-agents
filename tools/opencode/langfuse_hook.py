@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import os
+import platform
 import socket
 import subprocess
 import sys
@@ -108,21 +109,37 @@ _LOG_LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "WARNING": 30, "ERROR": 40}
 
 
 def _load_dotenv() -> None:
-    env_path = CONFIG_DIR / ".env"
-    try:
-        if not env_path.exists():
-            return
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip("'\"")
-            if key and key not in os.environ:
-                os.environ[key] = value
-    except Exception:
-        pass
+    for env_path in (CONFIG_DIR / ".env", CONFIG_DIR.parent / "langfuse-agent-hooks" / ".env"):
+        try:
+            for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key.startswith("export "):
+                    key = key[7:].lstrip()
+                value = value.strip().strip("'\"")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+        except OSError:
+            continue
+
+
+def _user_id() -> str:
+    return (os.environ.get("CC_LANGFUSE_USER_ID") or os.environ.get("CODING_AGENT_USER_NAME")
+            or os.environ.get("LANGFUSE_USER_ID") or Path.home().name or "local-user")
+
+
+def _device() -> dict:
+    if os.environ.get("CODING_AGENT_DEVICE_METADATA") == "false":
+        return {}
+    fields = {"host.name": socket.gethostname(), "os.type": sys.platform, "os.version": platform.release(),
+              "host.arch": platform.machine(), "host.cpu.logical_count": os.cpu_count()}
+    label = os.environ.get("CODING_AGENT_DEVICE_LABEL")
+    if label:
+        fields["coding_agent.device.label"] = label
+    return fields
 
 
 def _log(level: str, message: str) -> None:
@@ -518,7 +535,7 @@ def _build_turn_details(parts_map: Dict[str, Any]) -> Tuple[str, List[Dict[str, 
 
 def _emit_lifecycle_trace(client: Any, payload: Dict[str, Any], event_name: str, session_id: str) -> None:
     name = f"OpenCode {event_name}"
-    user_id = os.environ.get("LANGFUSE_USER_ID", "opencode-user")
+    user_id = _user_id()
     metadata = {
         "product": "opencode",
         "reconstruction": "plugin-event-lifecycle",
@@ -642,9 +659,9 @@ def _emit_turn_trace(state: Dict[str, Any], session_id: str, parent_id: str, mes
     end_time = completed.isoformat() if completed else None
     input_data, output_data = _truncate(prompt), _truncate(final)
     add("trace-create", id=trace_id, name=title, sessionId=session_id,
-        userId=os.environ.get("LANGFUSE_USER_ID", "opencode-user"), timestamp=start_time,
+        userId=_user_id(), timestamp=start_time, environment=os.environ.get("LANGFUSE_TRACING_ENVIRONMENT"),
         input=input_data, output=output_data, tags=["opencode", socket.gethostname()],
-        metadata={"source": "opencode", "generationCount": len(messages)})
+        metadata={"source": "opencode", "generationCount": len(messages), "device": _device()})
     add("agent-create", id=root_id, traceId=trace_id, name="OpenCode", startTime=start_time,
         endTime=end_time, input=input_data, output=output_data)
 

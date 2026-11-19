@@ -1,0 +1,33 @@
+{
+  "uid": "coding-agent-traces",
+  "title": "Coding agent traces",
+  "tags": ["coding-agents", "opentelemetry", "tempo"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [
+    { "name": "query", "label": "TraceQL filter", "type": "textbox", "query": "{ resource.service.name =~ \"coding-agent-.*|goose\" }", "current": { "text": "{ resource.service.name =~ \"coding-agent-.*|goose\" }", "value": "{ resource.service.name =~ \"coding-agent-.*|goose\" }" } },
+    { "name": "traceId", "label": "Trace ID", "type": "textbox", "query": "", "current": { "text": "", "value": "" } }
+  ] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Recent agent traces",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "tempo", "uid": "coding-agent-tempo" },
+      "targets": [{ "refId": "A", "queryType": "traceqlSearch", "query": "${query:raw}", "limit": 25, "tableType": "traces" }],
+      "fieldConfig": { "defaults": {}, "overrides": [{ "matcher": { "id": "byName", "options": "traceID" }, "properties": [{ "id": "links", "value": [{ "title": "Inspect this trace", "url": "/d/coding-agent-traces/coding-agent-traces?var-traceId=${__value.raw}" }] }] }] }
+    },
+    {
+      "id": 2,
+      "title": "Trace timeline and span attributes",
+      "description": "Select a model or tool span to inspect captured input/output and gen_ai usage attributes. Tool links carry the issuing and consuming model spans when available.",
+      "type": "traces",
+      "gridPos": { "h": 19, "w": 24, "x": 0, "y": 10 },
+      "datasource": { "type": "tempo", "uid": "coding-agent-tempo" },
+      "targets": [{ "refId": "A", "queryType": "traceId", "query": "$traceId" }]
+    }
+  ]
+}

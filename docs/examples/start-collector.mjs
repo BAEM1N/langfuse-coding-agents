@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
 import { createConnection } from 'node:net';
+import { arch, platform, release } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/core/config.ts';
@@ -15,7 +16,8 @@ const reachable = () => new Promise(resolve => {
 });
 if (await reachable()) process.exit(0);
 
-const config = loadConfig('claude', { ...process.env });
+const settings = { ...process.env };
+const config = loadConfig('claude', settings);
 if (!config.publicKey || !config.secretKey) throw Error('Collector requires Langfuse project keys');
 const log = openSync(join(directory, 'collector.log'), 'a');
 try {
@@ -24,6 +26,10 @@ try {
     detached: true, windowsHide: true, stdio: ['ignore', log, log],
     env: { ...process.env, CODING_AGENT_OTLP_FILE: join(directory, 'traces.ndjson'),
       CODING_AGENT_LANGFUSE_OTLP_URL: config.baseUrl + '/api/public/otel/v1/traces',
+      CODING_AGENT_TEMPO_TRACES_URL: settings.CODING_AGENT_TEMPO_TRACES_URL || 'http://127.0.0.1:14328/v1/traces',
+      CODING_AGENT_COLLECTOR_USER: config.userId,
+      CODING_AGENT_COLLECTOR_OS: platform(), CODING_AGENT_COLLECTOR_OS_VERSION: release(),
+      CODING_AGENT_COLLECTOR_ARCH: arch(), CODING_AGENT_COLLECTOR_ENVIRONMENT: config.environment ?? 'local',
       CODING_AGENT_LANGFUSE_AUTH: 'Basic ' + Buffer.from(config.publicKey + ':' + config.secretKey).toString('base64') },
   });
   child.once('error', () => { process.exitCode = 1; });

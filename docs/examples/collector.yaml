@@ -19,6 +19,27 @@ exporters:
     traces_endpoint: ${env:CODING_AGENT_LANGFUSE_OTLP_URL}
     headers:
       Authorization: ${env:CODING_AGENT_LANGFUSE_AUTH}
+  otlp_http/tempo:
+    traces_endpoint: ${env:CODING_AGENT_TEMPO_TRACES_URL}
+
+processors:
+  resource/local-user:
+    attributes:
+      - key: user.id
+        value: ${env:CODING_AGENT_COLLECTOR_USER}
+        action: insert
+      - key: os.type
+        value: ${env:CODING_AGENT_COLLECTOR_OS}
+        action: insert
+      - key: os.version
+        value: ${env:CODING_AGENT_COLLECTOR_OS_VERSION}
+        action: insert
+      - key: host.arch
+        value: ${env:CODING_AGENT_COLLECTOR_ARCH}
+        action: insert
+      - key: deployment.environment.name
+        value: ${env:CODING_AGENT_COLLECTOR_ENVIRONMENT}
+        action: insert
 
 service:
   telemetry:
@@ -28,7 +49,8 @@ service:
   pipelines:
     traces/local:
       receivers: [otlp/local]
-      exporters: [file]
+      exporters: [file, otlp_http/tempo]
     traces/goose:
       receivers: [otlp/goose]
-      exporters: [file, otlp_http/langfuse]
+      processors: [resource/local-user]
+      exporters: [file, otlp_http/langfuse, otlp_http/tempo]

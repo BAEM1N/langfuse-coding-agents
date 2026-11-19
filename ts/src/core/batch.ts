@@ -9,6 +9,7 @@ export interface BatchOptions extends SanitizeOptions {
   agentTag: string; // "claude-code"
   userId: string;
   hostname: string;
+  device?: Record<string, string | number>;
   environment?: string;
   release?: string;
   captureContent?: boolean;
@@ -48,7 +49,8 @@ export function turnToEvents(turn: Turn, opts: BatchOptions): IngestionEvent[] {
       input: content(turn.input),
       output: content(turn.output),
       tags: [opts.agentTag, opts.hostname],
-      metadata: s({ ...turn.metadata, complete: turn.complete, turnIndex: turn.index, hostname: opts.hostname, timelineIssueCount: issues.length }),
+      metadata: s({ ...turn.metadata, complete: turn.complete, turnIndex: turn.index, hostname: opts.hostname,
+        device: opts.device, timelineIssueCount: issues.length }),
       environment: opts.environment,
       release: opts.release,
     }),

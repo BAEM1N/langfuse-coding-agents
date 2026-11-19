@@ -22,7 +22,6 @@ import { batchOptions, logPath, normalizePayload, parseTranscript, runHook } fro
 import { turnToEvents } from './core/batch.ts';
 import { LangfuseClient } from './core/langfuse.ts';
 import { createLogger } from './core/log.ts';
-import { exportOtlp, loadOtlpConfig } from './core/otlp.ts';
 import { canExport, exportEvents } from './core/export.ts';
 import { applyPlan, deployPackage, HOOK_EVENTS, planAntigravityInstall, planCopilotInstall, planInstall } from './install.ts';
 import type { Turn } from './core/types.ts';
@@ -209,11 +208,11 @@ async function main(): Promise<void> {
       return;
     case 'export-otlp': {
       if (a1 !== 'opencode') throw new Error('export-otlp expects opencode');
-      const config = loadOtlpConfig(process.env);
-      if (!config) throw new Error('OTLP exporter is not configured');
+      const config = loadConfig(a1, { ...process.env });
+      if (!config.otlp) throw new Error('OTLP exporter is not configured');
       const events = JSON.parse(await readStdin());
       if (!Array.isArray(events)) throw new Error('Expected a trace event array');
-      if (!(await exportOtlp(config, events, a1)).ok) process.exitCode = 1;
+      if (!(await exportEvents({ ...config, enabled: false }, events, createLogger(logPath(config), config.debug))).ok) process.exitCode = 1;
       return;
     }
     case 'audit':
