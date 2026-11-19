@@ -71,6 +71,7 @@ test('Claude Stop waits for the model call recorded after the tool result', asyn
     CODING_AGENT_OTLP_ENABLED: 'true',
     CODING_AGENT_OTLP_TRACES_ENDPOINT: 'https://collector.example.test/v1/traces',
     CODING_AGENT_COLLECTOR_LAUNCHER: '',
+    CODING_AGENT_GITHUB_METADATA: 'false',
   };
   const previous = new Map(Object.keys(env).map(key => [key, process.env[key]]));
   Object.assign(process.env, env);

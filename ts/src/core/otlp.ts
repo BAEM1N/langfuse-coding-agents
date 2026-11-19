@@ -1,6 +1,7 @@
 import { stableId } from './ids.ts';
 import { sanitize } from './text.ts';
 import type { IngestResult, IngestionEvent } from './langfuse.ts';
+import { githubAttributes, type GithubContext } from './github.ts';
 
 export interface OtlpConfig {
   endpoint: string;
@@ -78,6 +79,8 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pi
     const nativeTraceId = traceId(body.traceId);
     const input = options.captureContent ? content(body.input) : undefined;
     const output = options.captureContent ? content(body.output) : undefined;
+    const github = !body.parentObservationId
+      ? (trace?.metadata as { github?: GithubContext } | undefined)?.github : undefined;
     const links = ['issuedByObservationId', 'consumedByObservationId'].flatMap(key => {
       const id = meta?.[key];
       return typeof id === 'string' && observations.has(id)
@@ -101,7 +104,10 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pi
         'coding_agent.input': input,
         'coding_agent.output': output,
         'langfuse.observation.input': input,
-        'langfuse.observation.output': output }),
+        'langfuse.observation.output': output,
+        ...(github ? githubAttributes(github) : {}),
+        'langfuse.observation.metadata.github': github ? JSON.stringify(github) : undefined,
+        'langfuse.trace.metadata.github': github ? JSON.stringify(github) : undefined }),
       events: (issuesByParent.get(body.id) ?? []).map(({ body }) => {
         const eventTime = Date.parse(String(body.startTime));
         return { name: String(body.name ?? 'coding_agent.event'), timeUnixNano: epoch(Number.isFinite(eventTime) ? eventTime : start),

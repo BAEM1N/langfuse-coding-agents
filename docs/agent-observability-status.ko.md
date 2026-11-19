@@ -18,6 +18,7 @@
 - **도구 호출** — 도구명, 인자, 결과, 호출 ID와 시각을 기록합니다. 호출을 요청한 모델과 결과를 받은 모델을 연결합니다. Antigravity는 네이티브 훅의 단계 번호로 도구 결과를 연결합니다.
 - **순서 이상** — 공통 런타임은 호출보다 먼저 기록된 결과, 중복 결과, 완료된 턴에서 누락된 호출·결과를 경고로 남깁니다. 병렬 도구는 겹치는 시각을 허용하며, 호출 근거가 부족하면 불확실성을 기록합니다.
 - **사용자·장비** — 설치 시 이름을 입력할 수 있고 빈 입력은 홈 폴더명으로 처리합니다. 공통 런타임은 호스트명, OS, 아키텍처와 가용한 장비 메타데이터를 기록합니다. 본문은 수집을 켠 경로에서 마스킹과 길이 제한을 적용합니다.
+- **GitHub** — 공통 런타임은 작업 저장소의 URL, 체크아웃한 커밋의 SHA·URL, 브랜치를 기록합니다. 일치하는 PR이 확인되면 번호와 URL도 기록합니다. Goose는 같은 정보를 네이티브 OTLP 리소스 속성으로 전달할 수 있습니다. [GitHub 연결 및 조회 방법](setup-agent-observability.md#github-repository-commit-and-pull-request)
 
 ## 에이전트별 완료 범위
 
@@ -46,10 +47,11 @@
 
 Windows에서 평소 로그인과 훅 설정을 그대로 두고 `agy` 1.5.12를 실행했습니다. `gemini-4-neon-xhigh`의 첫 호출은 입력 9,893 / 출력 230 토큰, `read_file` 이후의 호출은 입력 10,230 / 출력 153 토큰이었습니다. 후속 입력 중 7,836 토큰은 캐시 읽기로 기록됐습니다. 두 백엔드에서 같은 토큰과 입출력 및 `모델 → read_file → 모델` 순서를 확인했습니다. [Grafana의 노트북 검증 트레이스](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces?var-traceId=b96bde17e48f33ea8c1508ad3d52a7af)
 
+GitHub 연동은 [PR #1](https://github.com/BAEM1N/langfuse-coding-agents/pull/1)의 병합 커밋 체크아웃에서 Antigravity, OpenCode, Goose로 실측했습니다. 저장소, 커밋, PR 정보를 Langfuse와 Grafana 양쪽에서 확인했습니다. 노트북의 트레이스는 x64이며, 앞서 기록된 ARM64는 Apple Silicon Mac과 해당 Mac의 Debian VM 환경입니다.
+
 ## 남은 범위
 
 - **다른 관측 솔루션** — Jaeger, Honeycomb, Datadog은 OTLP 연결 경로를 [문서화](../ts/README.md#opentelemetry-traces)했습니다. 실측한 백엔드는 Langfuse와 Grafana Tempo입니다.
-- **GitHub 상관관계** — 일부 어댑터는 작업 경로·브랜치 등의 가용 메타데이터를 기록합니다. 전체 에이전트의 트레이스를 GitHub 저장소·커밋·PR까지 일관되게 연결하는 공통 기능은 미구현입니다.
 - **운영 범위** — 이 검증은 개별 턴 트레이스에 대한 것입니다. 중앙 경보, 상시 수집 성공률, Cursor·Kiro 인증 후 끝단 실측, 구독 한도 차감 비교는 별도 검증 범위입니다.
 
 운영 설정을 재현하거나 다시 확인하려면 [플랫폼별 설치 및 검증 가이드](setup-agent-observability.md)와 [순서·수집 범위 감사 명령](../ts/README.md#verify-call-order-and-monitoring-coverage)을 참고하세요.

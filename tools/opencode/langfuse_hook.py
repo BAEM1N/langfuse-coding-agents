@@ -572,12 +572,28 @@ def _otlp_enabled() -> bool:
     )
 
 
-def _export_otlp(events: List[Dict[str, Any]]) -> bool:
+def _shared_cli() -> str:
     deployed = Path.home() / ".local" / "share" / "langfuse-agent-hooks" / "src" / "cli.ts"
     repo_cli = Path(__file__).resolve().parents[2] / "ts" / "src" / "cli.ts"
-    cli = os.environ.get("OPENCODE_LANGFUSE_OTLP_CLI") or str(deployed if deployed.is_file() else repo_cli)
+    return os.environ.get("OPENCODE_LANGFUSE_OTLP_CLI") or str(deployed if deployed.is_file() else repo_cli)
+
+
+def _github_context() -> Optional[Dict[str, Any]]:
     try:
-        result = subprocess.run(["node", cli, "export-otlp", "opencode"], input=json.dumps(events).encode(),
+        result = subprocess.run(["node", _shared_cli(), "github-context", "opencode"],
+                                capture_output=True, timeout=5, check=False)
+        if result.returncode == 0:
+            context = json.loads(result.stdout)
+            if isinstance(context, dict):
+                return context
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _export_otlp(events: List[Dict[str, Any]]) -> bool:
+    try:
+        result = subprocess.run(["node", _shared_cli(), "export-otlp", "opencode"], input=json.dumps(events).encode(),
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8, check=False)
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -658,10 +674,14 @@ def _emit_turn_trace(state: Dict[str, Any], session_id: str, parent_id: str, mes
     start_time = first.isoformat() if first else now
     end_time = completed.isoformat() if completed else None
     input_data, output_data = _truncate(prompt), _truncate(final)
+    metadata = {"source": "opencode", "generationCount": len(messages), "device": _device()}
+    github = _github_context()
+    if github:
+        metadata["github"] = github
     add("trace-create", id=trace_id, name=title, sessionId=session_id,
         userId=_user_id(), timestamp=start_time, environment=os.environ.get("LANGFUSE_TRACING_ENVIRONMENT"),
         input=input_data, output=output_data, tags=["opencode", socket.gethostname()],
-        metadata={"source": "opencode", "generationCount": len(messages), "device": _device()})
+        metadata=metadata)
     add("agent-create", id=root_id, traceId=trace_id, name="OpenCode", startTime=start_time,
         endTime=end_time, input=input_data, output=output_data)
 

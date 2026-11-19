@@ -44,6 +44,50 @@ For a headless Antigravity CLI run using the Gemini API, set
 export `GEMINI_API_KEY` in the shell that launches `agy`.
 [Antigravity CLI authentication](https://antigravity.google/docs/install?tab=cli#using-a-gemini-api-key)
 
+## GitHub repository, commit, and pull request
+
+The shared hooks attach the GitHub `origin` URL, checked-out commit SHA and
+commit URL, and the branch when available. Run the agent in the repository
+checkout you want to trace. The exported URL excludes remote credentials and
+query strings.
+
+For a pull request, the runtime uses a matching GitHub Actions checkout
+(`GITHUB_REPOSITORY`, `GITHUB_SHA` and `GITHUB_REF`) or queries GitHub with an
+authenticated `gh` CLI. A local lookup selects a single PR whose head or merge
+commit matches the checked-out SHA. A missing or ambiguous match leaves the PR
+fields empty. The trace still exports when Git or GitHub is unavailable.
+
+Open the trace metadata in Langfuse and look for `github`. In Grafana, open the
+root agent span and look for `vcs.repository.url.full`, `vcs.ref.head.revision`,
+`vcs.change.id`, and `github.pull_request.url`. You can search in Tempo with
+`{ span.github.repository = "owner/repo" && span.vcs.change.id = "123" }`.
+[OpenTelemetry VCS attributes](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/)
+
+Set `CODING_AGENT_GITHUB_PR_LOOKUP=false` to disable the GitHub API request.
+Set `CODING_AGENT_GITHUB_METADATA=false` to disable all GitHub fields. The
+standalone Langfuse integrations and historical transcript backfill retain
+their existing metadata behavior. OpenCode's turn exporter uses the installed
+shared Node runtime to obtain GitHub context.
+
+Native OTLP exporters such as Goose can take the same fields as resource
+attributes. Run the command from the checkout before starting the agent.
+In Tempo search, use `resource.github.repository` and `resource.vcs.change.id`
+for this route.
+
+```sh
+github_attrs=$(node /path/to/langfuse-coding-agents/ts/src/cli.ts github-context --otlp)
+if [ -n "$github_attrs" ]; then
+  export OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+$OTEL_RESOURCE_ATTRIBUTES,}$github_attrs"
+fi
+```
+
+```powershell
+$githubAttrs = node C:/path/to/langfuse-coding-agents/ts/src/cli.ts github-context --otlp
+if ($githubAttrs) {
+  $env:OTEL_RESOURCE_ATTRIBUTES = (@($env:OTEL_RESOURCE_ATTRIBUTES, $githubAttrs) | Where-Object { $_ }) -join ','
+}
+```
+
 ## Send to Tempo and Langfuse
 
 The [Collector example](examples/collector.yaml) sends the common OTLP copy to Tempo

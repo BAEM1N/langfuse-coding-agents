@@ -53,21 +53,22 @@ function findPython() {
   return 'python3'; // fallback
 }
 
-function forwardToHook(payload) {
+function forwardToHook(payload, directory) {
   try {
     debugDump(payload);
     spawnSync(findPython(), [resolveHookPath()], {
       input: JSON.stringify(payload || {}),
       stdio: ['pipe', 'ignore', 'ignore'],
       env: process.env,
-      timeout: 10000,
+      cwd: typeof directory === 'string' && path.isAbsolute(directory) ? directory : undefined,
+      timeout: 15000,
     });
   } catch {
     // fail-open: never block OpenCode
   }
 }
 
-export const LangfuseOpenCodePlugin = async () => {
+export const LangfuseOpenCodePlugin = async ({ directory } = {}) => {
   return {
     event: async ({ event }) => {
       const eventType = String(event?.type || '').toLowerCase();
@@ -78,7 +79,7 @@ export const LangfuseOpenCodePlugin = async () => {
         source: 'opencode-plugin',
         captured_at: new Date().toISOString(),
         event,
-      });
+      }, directory);
     },
   };
 };

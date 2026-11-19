@@ -4,6 +4,7 @@ import type { Config } from './config.ts';
 import { LangfuseClient, type IngestionEvent, type IngestResult } from './langfuse.ts';
 import type { Logger } from './log.ts';
 import { exportOtlp } from './otlp.ts';
+import { enrichGithub } from './github.ts';
 
 const launch = promisify(execFile);
 
@@ -11,7 +12,8 @@ export function canExport(config: Config): boolean {
   return Boolean(config.otlp || config.otlpError || (config.enabled && config.publicKey && config.secretKey));
 }
 
-export async function exportEvents(config: Config, events: IngestionEvent[], logger: Logger): Promise<IngestResult> {
+export async function exportEvents(config: Config, events: IngestionEvent[], logger: Logger, cwd = process.cwd()): Promise<IngestResult> {
+  if (config.github) await enrichGithub(events, config.github, cwd);
   const sends = [];
   if (config.otlpError) sends.push(Promise.resolve({ ok: false, sent: 0, errors: [{ message: config.otlpError }] }));
   if (config.otlp) {

@@ -189,7 +189,7 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
   const opts = batchOptions(cfg);
   const events = turns.flatMap((t) => turnToEvents(t, opts));
   const started = Date.now();
-  const res = await exportEvents(cfg, events, log);
+  const res = await exportEvents(cfg, events, log, p.cwd);
   if (!res.ok) {
     log.error(`ingest failed (${res.errors.length} errors): ${JSON.stringify(res.errors.slice(0, 3))}`);
     return { turns: turns.length, events: events.length, errors: res.errors.length };

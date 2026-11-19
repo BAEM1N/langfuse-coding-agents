@@ -3,6 +3,7 @@ import { availableParallelism, homedir, hostname, platform, release, arch, total
 import { basename, join } from 'node:path';
 import type { TraceAgentName } from './types.ts';
 import { loadOtlpConfig, type OtlpConfig } from './otlp.ts';
+import { githubOptions, type GithubOptions } from './github.ts';
 
 export interface Config {
   agent: TraceAgentName;
@@ -23,6 +24,7 @@ export interface Config {
   otlpError?: string;
   collectorLauncher?: string;
   nodeExecutable?: string;
+  github?: GithubOptions;
 }
 
 export function agentHome(agent: TraceAgentName): string {
@@ -105,6 +107,7 @@ export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = proce
     otlpError,
     collectorLauncher: env.CODING_AGENT_COLLECTOR_LAUNCHER,
     nodeExecutable: env.CODING_AGENT_NODE_EXECUTABLE,
+    github: githubOptions(env),
     enabled: (pick(env, 'TRACE_TO_LANGFUSE') ?? '').toLowerCase() === 'true',
     publicKey: pick(env, 'CC_LANGFUSE_PUBLIC_KEY', 'LANGFUSE_PUBLIC_KEY'),
     secretKey: pick(env, 'CC_LANGFUSE_SECRET_KEY', 'LANGFUSE_SECRET_KEY'),

@@ -23,6 +23,7 @@ import { turnToEvents } from './core/batch.ts';
 import { LangfuseClient } from './core/langfuse.ts';
 import { createLogger } from './core/log.ts';
 import { canExport, exportEvents } from './core/export.ts';
+import { githubAttributes, githubOptions, readGithubContext } from './core/github.ts';
 import { applyPlan, deployPackage, HOOK_EVENTS, planAntigravityInstall, planCopilotInstall, planInstall } from './install.ts';
 import type { Turn } from './core/types.ts';
 import type { AgentName } from './core/types.ts';
@@ -206,6 +207,17 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(a1 === 'PreToolUse' ? { decision: 'allow' } : {}));
       }
       return;
+    case 'github-context': {
+      const config = a1 === 'opencode' ? loadConfig(a1, { ...process.env }) : undefined;
+      const github = await readGithubContext(process.cwd(), config?.github ?? githubOptions(process.env));
+      if (a1 === '--otlp') {
+        console.log(github ? Object.entries(githubAttributes(github)).filter(([, value]) => value !== undefined)
+          .map(([key, value]) => key + '=' + String(value).replace(/[%,=]/g, encodeURIComponent)).join(',') : '');
+      } else {
+        console.log(JSON.stringify(github ?? null));
+      }
+      return;
+    }
     case 'export-otlp': {
       if (a1 !== 'opencode') throw new Error('export-otlp expects opencode');
       const config = loadConfig(a1, { ...process.env });
@@ -230,7 +242,7 @@ async function main(): Promise<void> {
         const stop = typeof payload.timestamp === 'number' ? new Date(payload.timestamp).toISOString() : new Date().toISOString();
         const turn = await readCopilotTurn(payload.transcript_path, payload.session_id, stop);
         if (!turn) { log.debug('Copilot skipped: transcript has no completed interaction'); return; }
-        const result = await exportEvents(cfg, turnToEvents(turn, batchOptions(cfg)), log);
+        const result = await exportEvents(cfg, turnToEvents(turn, batchOptions(cfg)), log, payload.cwd);
         if (!result.ok) log.error(`Copilot export failed (${result.errors.length} errors)`);
         else log.debug('Copilot turn exported');
       } catch { log.error('Could not export Copilot turn'); }

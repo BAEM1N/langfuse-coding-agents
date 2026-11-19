@@ -138,7 +138,8 @@ export async function runAntigravityHook(phase: AntigravityPhase, payload: Recor
   turn.steps.push(...toolSteps.values());
   turn.steps.sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
   turn.output = generations.findLast((g) => typeof g.content === 'string')?.content;
-  const response = await exportEvents(config, turnToEvents(turn, { ...batchOptions(config), captureContent }), log);
+  const cwd = typeof payload.cwd === 'string' ? payload.cwd : undefined;
+  const response = await exportEvents(config, turnToEvents(turn, { ...batchOptions(config), captureContent }), log, cwd);
   if (!response.ok) log.error('Antigravity trace ingestion failed (' + response.errors.map(e => e.status ?? e.message).join(', ') + ')');
   else {
     for (const name of consumedFiles) unlinkSync(join(directory, name));

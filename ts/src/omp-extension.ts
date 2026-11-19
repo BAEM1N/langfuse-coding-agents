@@ -7,6 +7,7 @@ import { batchOptions, logPath } from './core/run.ts';
 
 // Structural subset of the OMP extension context, so the tracing package stays dependency-free.
 interface OmpContext {
+  cwd?: string;
   sessionManager: { getSessionId(): string; getBranch(): unknown[] };
 }
 
@@ -35,7 +36,7 @@ export default function (omp: OmpExtension): void {
       const existing = pending.get(key);
       if (existing) { await existing; return; }
       const events = turnToEvents(turn, { ...batchOptions(cfg), captureContent: env.LANGFUSE_HOOK_CAPTURE_CONTENT === 'true' });
-      const delivery = exportEvents(cfg, events, log).then(result => {
+      const delivery = exportEvents(cfg, events, log, ctx.cwd).then(result => {
         if (!result.ok) log.error('OMP trace ingestion failed (' + result.errors.length + ' errors)');
         else log.debug('OMP trace sent (' + result.sent + ' events)');
         return result.ok;
