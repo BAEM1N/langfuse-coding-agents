@@ -14,7 +14,7 @@ import { basename } from 'node:path';
 import { loadConfig } from './core/config.ts';
 import { auditLangfuse, summarizeTurns } from './core/audit.ts';
 import { parseOmpSession } from './adapters/omp.ts';
-import { parseCopilotTurn } from './adapters/copilot.ts';
+import { readCopilotTurn } from './adapters/copilot.ts';
 import { runAntigravityHook } from './core/antigravity-hook.ts';
 import { auditAntigravity } from './adapters/antigravity.ts';
 import { readJsonlFrom } from './core/jsonl.ts';
@@ -228,7 +228,7 @@ async function main(): Promise<void> {
           return;
         }
         const stop = typeof payload.timestamp === 'number' ? new Date(payload.timestamp).toISOString() : new Date().toISOString();
-        const turn = parseCopilotTurn(readJsonlFrom(payload.transcript_path).entries, payload.session_id, stop);
+        const turn = await readCopilotTurn(payload.transcript_path, payload.session_id, stop);
         if (!turn) { log.debug('Copilot skipped: transcript has no completed interaction'); return; }
         const result = await exportEvents(cfg, turnToEvents(turn, batchOptions(cfg)), log);
         if (!result.ok) log.error(`Copilot export failed (${result.errors.length} errors)`);

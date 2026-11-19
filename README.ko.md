@@ -117,7 +117,7 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 
 `--grafana`에는 압축을 푼 Grafana 폴더를, 설치 스크립트의 `--tempo`에는 OTLP 수신 URL을 지정합니다. 예제 Collector는 필요할 때 시작됩니다. 기존 Collector의 YAML을 바꿨다면 Collector를 재시작하세요. 지원되는 경로에서 프롬프트·응답·도구 본문까지 필요할 때 `--capture-content`를 사용합니다.
 
-로컬 [Coding agent traces 대시보드](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces)에서 트레이스 ID를 선택하고 모델이나 도구 스팬을 펼칩니다. 공통 OTLP 전송기의 본문은 `coding_agent.input`과 `coding_agent.output`, 토큰은 `gen_ai.usage.*`에서 확인할 수 있습니다. 기존 Collector를 쓴다면 `CODING_AGENT_OTLP_TRACES_ENDPOINT`에 HTTP 트레이스 수신 URL을 지정하세요. [상세 설정 및 에이전트 가이드](docs/setup-agent-observability.md)
+로컬 [Coding agent traces 대시보드](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces)에서 트레이스 ID를 선택하고 모델이나 도구 스팬을 펼칩니다. 공통 OTLP 전송기의 본문은 `coding_agent.input`과 `coding_agent.output`, 토큰은 `gen_ai.usage.*`에서 확인할 수 있습니다. 원격 장비나 컨테이너에서 에이전트를 실행하면 그 환경에서 접속할 수 있는 Collector URL을 사용하세요. 기존 Collector가 Langfuse와 Tempo 모두로 보내는 경우 [공용 Collector 설정](docs/setup-agent-observability.md#use-an-existing-collector)을 따르세요.
 
 Grafana 계정으로 로그인하세요. 로컬에서 로그인 없이 읽기 전용으로 보려면 Grafana를 시작할 때 `start-grafana.mjs`에 `--anonymous-viewer`를 추가합니다.
 

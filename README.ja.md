@@ -62,6 +62,8 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 
 `--grafana` には展開した Grafana のホームディレクトリを指定します。セットアップ側の `--tempo` は OTLP の受信 URL です。プロンプト、応答、ツールの本文が必要なときは `--capture-content` を使用します。すでに Collector が稼働している場合は、YAML の変更後に再起動してください。
 
+別の端末やコンテナでエージェントを実行する場合は、その環境から接続可能な Collector の URL を指定します。既存の Collector が Langfuse と Tempo の両方に転送する構成では、[共有 Collector の設定](docs/setup-agent-observability.md#use-an-existing-collector)を参照してください。
+
 ## トレースの確認
 
 テスト用の `probe.txt` に固有の文字列を入れ、エージェントに読み取ってそのまま返すよう依頼します。Langfuse とローカルの [Grafana ダッシュボード](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces) で対象のトレースを開き、モデル → ツール → モデルの順序、入出力、トークンを確認します。

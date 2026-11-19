@@ -124,7 +124,7 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 
 `--grafana` points to the extracted Grafana home directory, and `--tempo` on the setup script is the OTLP ingest URL. The example Collector starts on demand. Restart an existing Collector after updating its YAML. Use `--capture-content` only when you want supported exporters to include prompt, response, and tool bodies.
 
-Open the local [Coding agent traces dashboard](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces), select a trace ID, and expand its model or tool spans. `coding_agent.input`, `coding_agent.output`, and `gen_ai.usage.*` expose the payload and token fields in the shared OTLP exporter. If you already run a Collector, set `CODING_AGENT_OTLP_TRACES_ENDPOINT` to its full HTTP traces URL and [configure the exporter](ts/README.md#opentelemetry-traces).
+Open the local [Coding agent traces dashboard](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces), select a trace ID, and expand its model or tool spans. `coding_agent.input`, `coding_agent.output`, and `gen_ai.usage.*` expose the payload and token fields in the shared OTLP exporter. If the agents run on another machine or inside a container, use a Collector URL reachable from that environment. If the existing Collector already forwards to both destinations, follow the [shared Collector setup](docs/setup-agent-observability.md#use-an-existing-collector).
 
 Sign in with your Grafana account. For a local read-only session without sign-in, pass `--anonymous-viewer` to `start-grafana.mjs` when starting Grafana.
 

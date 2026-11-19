@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmdirSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ompExtension from '../src/omp-extension.ts';
@@ -9,7 +9,7 @@ import { turnToEvents } from '../src/core/batch.ts';
 import { parseOmpSession } from '../src/adapters/omp.ts';
 import { loadOtlpConfig, otlpPayload } from '../src/core/otlp.ts';
 import { auditStoredTrace } from '../src/core/audit.ts';
-import { parseCopilotTurn } from '../src/adapters/copilot.ts';
+import { readCopilotTurn } from '../src/adapters/copilot.ts';
 import type { Turn } from '../src/core/types.ts';
 
 const time = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -47,6 +47,8 @@ test('correlates parallel tools by call ID and preserves edges without capturing
 test('OTLP preserves causal links and excludes captured bodies by default', () => {
   const turn = parallelTurn();
   turn.input = 'diagnostic prompt';
+  turn.steps[1].input = { path: 'probe.txt' };
+  turn.steps[1].output = 'diagnostic result';
   const generation = turn.steps[0];
   assert.equal(generation.kind, 'generation');
   generation.usage = { input: 10, input_cached_tokens: 4, output: 2 };
@@ -69,9 +71,19 @@ test('OTLP preserves causal links and excludes captured bodies by default', () =
   assert.equal(parallel.startTimeUnixNano, tool.startTimeUnixNano);
   assert.ok(first.attributes.some(attribute => attribute.key === 'gen_ai.usage.input_tokens'
     && 'intValue' in attribute.value && attribute.value.intValue === '14'));
-  assert.ok(!root.attributes.some(attribute => attribute.key === 'coding_agent.input'));
-  const withContent = otlpPayload(events, 'omp', { captureContent: true });
-  assert.ok(JSON.stringify(withContent).includes('diagnostic prompt'));
+  const contentKeys = ['coding_agent.input', 'coding_agent.output', 'langfuse.observation.input', 'langfuse.observation.output'];
+  assert.ok(resource.scopeSpans[0].spans.every(span => span.attributes.every(attribute => !contentKeys.includes(attribute.key))));
+  const [capturedRoot, , capturedTool] = otlpPayload(events, 'omp', { captureContent: true }).resourceSpans[0].scopeSpans[0].spans;
+  const rootInput = capturedRoot.attributes.find(attribute => attribute.key === 'langfuse.observation.input')?.value;
+  assert.deepEqual(rootInput, { stringValue: '"diagnostic prompt"' });
+  for (const span of [capturedRoot, capturedTool]) {
+    for (const field of ['input', 'output']) {
+      assert.deepEqual(span.attributes.find(attribute => attribute.key === `langfuse.observation.${field}`)?.value,
+        span.attributes.find(attribute => attribute.key === `coding_agent.${field}`)?.value);
+    }
+  }
+  assert.deepEqual(capturedTool.attributes.find(attribute => attribute.key === 'langfuse.observation.output')?.value,
+    { stringValue: '"diagnostic result"' });
 });
 
 test('reports early, duplicate and orphaned results while separating incomplete turns', () => {
@@ -108,7 +120,7 @@ test('audits native Goose spans and reports a missing final response without dou
     modelTokenUsage: 1, toolInputs: 1, toolOutputs: 1 });
 });
 
-test('Copilot binds per-request usage by API call ID and threads tool results into the next model call', () => {
+test('Copilot waits for late final responses and links model usage and tool results', async (t) => {
   const rows = [
     ['user.message', 1, { messageId: 'u', content: 'read file' }],
     ['assistant.turn_start', 2, { turnId: '1' }],
@@ -120,7 +132,18 @@ test('Copilot binds per-request usage by API call ID and threads tool results in
     ['session.usage_record', 6, { usage: { apiCallId: 'request-b', inputTokens: 20, cacheReadTokens: 12, outputTokens: 2 } }],
     ['assistant.message', 6, { messageId: 'b', turnId: '2', apiCallId: 'request-b', content: 'contents' }],
   ] as const;
-  const turn = parseCopilotTurn(rows.map(([type, at, data], offset) => ({ offset, value: { type, timestamp: time(at), data } })), 'session', time(7));
+  const directory = mkdtempSync(join(tmpdir(), 'langfuse-copilot-'));
+  const transcript = join(directory, 'events.jsonl');
+  const entries = rows.map(([type, at, data]) => ({ type, timestamp: time(at), data }));
+  const jsonl = (values: typeof entries) => values.map(value => JSON.stringify(value) + '\n').join('');
+  writeFileSync(transcript, jsonl(entries.slice(0, -2)));
+  const timer = setTimeout(() => appendFileSync(transcript, jsonl(entries.slice(-2))), 30);
+  t.after(() => {
+    clearTimeout(timer);
+    unlinkSync(transcript);
+    rmdirSync(directory);
+  });
+  const turn = await readCopilotTurn(transcript, 'session', time(7));
   assert.ok(turn);
   assert.equal(turn.output, 'contents');
   const [first, tool, last] = turn.steps;

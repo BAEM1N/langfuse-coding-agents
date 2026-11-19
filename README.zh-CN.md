@@ -62,6 +62,8 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 
 `--grafana` 指向解压后的 Grafana 主目录，安装脚本中的 `--tempo` 指定 OTLP 接收 URL。需要采集提示词、响应和工具调用正文时，使用 `--capture-content`。对于已经运行的 Collector，修改 YAML 后请重启它。
 
+如果代理在另一台机器或容器中运行，请使用该环境可以访问的 Collector URL。如果现有 Collector 已经向 Langfuse 和 Tempo 转发，请参阅[共享 Collector 配置](docs/setup-agent-observability.md#use-an-existing-collector)。
+
 ## 验证链路
 
 新建测试文件 `probe.txt`，写入唯一标记，请代理读取文件并原样返回。打开 Langfuse 和本地 [Grafana 仪表板](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces)，检查模型 → 工具 → 模型的顺序及对应的输入输出和令牌数。

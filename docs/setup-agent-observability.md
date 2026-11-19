@@ -78,6 +78,34 @@ then use a trace ID to inspect individual model and tool spans. `coding_agent.in
 and `coding_agent.output` hold the shared exporters' captured bodies. Native exporters
 such as Goose use `gen_ai.input.messages`, `gen_ai.output.messages`, and tool attributes.
 
+### Use an existing Collector
+
+When an existing Collector routes traces to both Langfuse and Tempo, put these
+settings in the agent user's `~/.config/langfuse-agent-hooks/.env` and install
+with the platform wrapper above. Keep the Langfuse project credentials on the
+Collector. The Collector URL must be reachable from the agent's own host or container.
+
+```dotenv
+TRACE_TO_LANGFUSE=false
+CODING_AGENT_OTLP_TRACES_ENDPOINT=https://collector.example.com/v1/traces
+```
+
+Use the full OTLP/HTTP traces URL for the receiver that forwards to both services.
+For the repository's Collector example, this is the receiver on port `14320`.
+The `14318` receiver forwards to Tempo and the local file. If you use that
+receiver, enable direct Langfuse export and configure the project keys on the
+agent host as described in the [quick start](../README.md#quick-start).
+
+For a smoke test, install with `--capture-content` and use a synthetic
+`probe.txt` containing a unique marker. Ask the agent to read the file with
+its file-reading tool and return the exact contents. Find the trace in Langfuse
+and use the same trace ID in Grafana. Check that the issuing model span ends
+before the tool span begins and the next model span begins after the tool ends.
+Compare the prompt, file path, result, final response, and both model calls'
+input and output token counts. The shared exporter sends captured bodies in
+the Langfuse observation input and output fields and in the Grafana span
+attributes `coding_agent.input` and `coding_agent.output`.
+
 ## Agent setup checklist
 
 1. Read the user's existing agent and exporter configuration. Reuse configured

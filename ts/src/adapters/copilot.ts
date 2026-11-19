@@ -1,5 +1,22 @@
-import type { JsonlEntry } from '../core/jsonl.ts';
+import { setTimeout as wait } from 'node:timers/promises';
+import { readJsonlFrom, type JsonlEntry } from '../core/jsonl.ts';
 import type { ToolStep, Turn, Usage } from '../core/types.ts';
+
+export async function readCopilotTurn(path: string, sessionId: string, stoppedAt: string): Promise<Turn | undefined> {
+  // agentStop can run before the final response and usage reach the transcript.
+  const deadline = performance.now() + 750;
+  let turn: Turn | undefined;
+  do {
+    turn = parseCopilotTurn(readJsonlFrom(path).entries, sessionId, stoppedAt);
+    const last = turn?.steps.at(-1);
+    if (last?.kind === 'generation' && last.usage && turn?.output !== undefined) {
+      const output = last.output as { content: unknown[] };
+      if (!output.content.length) return turn;
+    }
+    if (performance.now() >= deadline) return turn;
+    await wait(75);
+  } while (true);
+}
 
 function usageOf(source: Record<string, unknown> | undefined): Usage | undefined {
   if (!source || typeof source.inputTokens !== 'number' || typeof source.outputTokens !== 'number') return;

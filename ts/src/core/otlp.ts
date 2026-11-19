@@ -76,6 +76,8 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pi
     const cacheWrite = net?.input_cache_creation ?? net?.cache_creation_input_tokens ?? 0;
     const operation = generation ? 'chat' : tool ? 'execute_tool' : 'invoke_agent';
     const nativeTraceId = traceId(body.traceId);
+    const input = options.captureContent ? content(body.input) : undefined;
+    const output = options.captureContent ? content(body.output) : undefined;
     const links = ['issuedByObservationId', 'consumedByObservationId'].flatMap(key => {
       const id = meta?.[key];
       return typeof id === 'string' && observations.has(id)
@@ -96,8 +98,10 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pi
         'gen_ai.usage.cache_read.input_tokens': net && cacheRead,
         'gen_ai.usage.cache_creation.input_tokens': net && cacheWrite,
         'coding_agent.timing.has_end': Number.isFinite(observedEnd),
-        'coding_agent.input': options.captureContent ? content(body.input) : undefined,
-        'coding_agent.output': options.captureContent ? content(body.output) : undefined }),
+        'coding_agent.input': input,
+        'coding_agent.output': output,
+        'langfuse.observation.input': input,
+        'langfuse.observation.output': output }),
       events: (issuesByParent.get(body.id) ?? []).map(({ body }) => {
         const eventTime = Date.parse(String(body.startTime));
         return { name: String(body.name ?? 'coding_agent.event'), timeUnixNano: epoch(Number.isFinite(eventTime) ? eventTime : start),
