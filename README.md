@@ -4,7 +4,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![langfuse ≥4.0](https://img.shields.io/badge/langfuse-%E2%89%A54.0-7c3aed.svg)](https://github.com/langfuse/langfuse-python)
 
-[English](README.md) | [한국어](README.ko.md)
+[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
 `langfuse-coding-agents` adds LLM observability to Claude Code, OpenAI Codex CLI,
 Oh My Pi (OMP), Google Antigravity CLI, and OpenCode. It captures coding agent turns,
@@ -23,6 +23,9 @@ the model requests around it. Export to [Langfuse](https://langfuse.com), an
 
 - [Supported AI coding agents](#supported-ai-coding-agents)
 - [Quick start](#quick-start)
+- [Add Grafana Tempo](#add-grafana-tempo)
+- [Standalone Python integrations](#standalone-python-integrations)
+- [Agent-driven setup](#agent-driven-setup)
 - [Choose your tool](#choose-your-tool)
 - [Architecture](#architecture)
 - [Compatibility](#compatibility)
@@ -58,25 +61,74 @@ CLI adapter remains available for existing compatible deployments. [Google migra
 
 ## Quick start
 
-With Node.js 22.18+:
+Install Node.js 22.18 or later and the coding agents you want to trace. OpenCode 1.x also needs Python with `venv` support. On Windows, use PowerShell 7 for Copilot CLI command hooks.
 
-```bash
+```sh
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git
-cd langfuse-coding-agents/ts
-node src/cli.ts install claude     # or: codex, antigravity
+cd langfuse-coding-agents
 ```
 
-Configure an exporter in the agent's environment. For example, use a local
-OpenTelemetry Collector HTTP receiver:
+### 1. Configure Langfuse
+
+Create `~/.config/langfuse-agent-hooks/.env` (`%USERPROFILE%\.config\langfuse-agent-hooks\.env` on Windows). Use your Langfuse project's keys and base URL. The installer can reuse already configured keys.
 
 ```dotenv
-CODING_AGENT_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
+TRACE_TO_LANGFUSE=true
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
+LANGFUSE_SECRET_KEY=sk-lf-your-project-key
 ```
 
-For Langfuse keys, OpenCode and OMP setup, and model/tool body capture controls,
-follow the [runtime configuration guide](ts/README.md).
+### 2. Install hooks for your agents
 
-### Python integrations
+Run the script for your OS from the repository root. The example installs Claude Code and Codex hooks. Use a comma-separated list to select other agents such as `omp`, `antigravity`, `copilot`, or `opencode`.
+
+```powershell
+./scripts/setup.ps1 --agents 'claude,codex'
+```
+
+```sh
+sh scripts/setup.sh --agents claude,codex
+```
+
+Press Enter at the trace name prompt to use your home folder name, or pass `--name` to set it. `--device` adds a machine label and `--environment` sets an environment such as `local` or `ci`. Restart the agent after installing. In Codex, review newly registered commands with `/hooks`.
+
+### 3. Verify a real trace
+
+In a test directory, create `probe.txt` with a unique marker and ask the agent to read it and return its contents. In Langfuse, find the new trace and check the model call, tool execution, and following model call. Inspect the tool arguments and result plus the input/output token fields. Availability depends on the adapter and capture settings.
+
+```sh
+node ts/src/cli.ts doctor claude
+node ts/src/cli.ts audit-langfuse claude --limit 10
+```
+
+Use `codex` in those diagnostic commands if its configuration holds the project keys. See the [platform setup guide](docs/setup-agent-observability.md) for [Deep Agents SDK](tools/deepagents/) and [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) setup.
+
+## Add Grafana Tempo
+
+The hooks send directly to Langfuse. The Collector sends the OTLP copy to Tempo, and Grafana reads Tempo. Goose's native exporter goes through the Collector to both destinations. Provide existing Grafana, Tempo, and OpenTelemetry Collector binaries. The Collector distribution needs `file`, `resource`, and `otlp_http`.
+
+**Windows**
+
+```powershell
+node scripts/start-grafana.mjs --tempo 'C:\path\tempo.exe' --grafana 'C:\path\grafana-home'
+./scripts/setup.ps1 --agents 'claude,codex' --collector 'C:\path\otelcol.exe' --tempo http://127.0.0.1:14328/v1/traces --capture-content
+```
+
+**macOS and Linux**
+
+```sh
+node scripts/start-grafana.mjs --tempo /path/to/tempo --grafana /path/to/grafana-home
+sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo http://127.0.0.1:14328/v1/traces --capture-content
+```
+
+`--grafana` points to the extracted Grafana home directory, and `--tempo` on the setup script is the OTLP ingest URL. The example Collector starts on demand. Restart an existing Collector after updating its YAML. Use `--capture-content` only when you want supported exporters to include prompt, response, and tool bodies.
+
+Open the local [Coding agent traces dashboard](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces), select a trace ID, and expand its model or tool spans. `coding_agent.input`, `coding_agent.output`, and `gen_ai.usage.*` expose the payload and token fields in the shared OTLP exporter. If you already run a Collector, set `CODING_AGENT_OTLP_TRACES_ENDPOINT` to its full HTTP traces URL and [configure the exporter](ts/README.md#opentelemetry-traces).
+
+Sign in with your Grafana account. For a local read-only session without sign-in, pass `--anonymous-viewer` to `start-grafana.mjs` when starting Grafana.
+
+## Standalone Python integrations
 
 ```bash
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git
@@ -90,13 +142,13 @@ The installer:
 - merges the hook entries into the tool's existing settings/hooks JSON (no overwrite),
 - prints any tool-specific one-time steps (e.g. Codex `/hooks` trust prompt).
 
-### Agent-driven setup
+## Agent-driven setup
 
 If you don't want to read installer prompts, hand this repo to an AI coding agent (Claude Code, Codex, Cursor, Gemini CLI, ...) and say:
 
 > "Set up Langfuse tracing for my `<tool>`."
 
-The agent will read [`AGENTS.md`](AGENTS.md) (or [`CLAUDE.md`](CLAUDE.md) for Claude Code), interview you for credentials, and run the setup non-interactively. The guide is explicit about *not* auto-installing system packages — the agent surfaces one-liners for you to run, never `sudo apt install`s on its own.
+The agent can follow [`AGENTS.md`](AGENTS.md) to reuse your local configuration, register hooks, and verify a small trace. If it needs a new Langfuse key, put the key in the local `.env` from the [Quick start](#quick-start).
 
 ---
 
@@ -104,14 +156,14 @@ The agent will read [`AGENTS.md`](AGENTS.md) (or [`CLAUDE.md`](CLAUDE.md) for Cl
 
 | Your situation | Use |
 |---|---|
-| Daily-driver Claude Code session | `tools/claude-code/` |
-| Codex CLI 0.128+ standalone (no wrapper) | `tools/codex/` |
+| Daily-driver Claude Code session | [Shared setup script](#2-install-hooks-for-your-agents) |
+| Codex CLI standalone | [Shared setup script](#2-install-hooks-for-your-agents) and `/hooks` review |
 | Codex CLI through the `oh-my-codex` npm wrapper | `tools/oh-my-codex/` — its installer also registers the Codex native bridge, so a separate `tools/codex/` install is unnecessary |
 | OpenCode (any provider: Anthropic, OpenAI, OpenRouter, local LM Studio / Ollama, ...) | `tools/opencode/` |
 | Antigravity CLI for Google personal accounts | [Antigravity hooks](ts/README.md#antigravity) |
 | Existing Gemini CLI deployment | `tools/gemini-cli/` |
 
-If you run multiple tools, install them one by one — each writes to its own config directory and shares no global state.
+The shared installer accepts multiple agents and reuses a common exporter configuration. Each agent's hook registration lives in its own configuration directory.
 
 ---
 
@@ -222,16 +274,16 @@ agent has a documented signal source, a local smoke test, or both. The
 
 ## Security & privacy
 
-These hooks **forward every conversation turn, tool call, and model response** to the Langfuse instance you configure. That includes prompts, file paths, and tool outputs — whatever the host agent sees.
+Depending on the adapter and capture settings, prompt text, responses, file paths, and tool output can be sent to your configured backends.
 
 Recommendations:
 
 - **Self-host Langfuse** if conversations may include proprietary code, internal URLs, secrets, or PII. The cloud `https://cloud.langfuse.com` is convenient but external.
 - **Treat `.env` files as secrets** — installers write them with restrictive permissions; don't commit them.
-- **`TRACE_TO_LANGFUSE=true` is a hard gate.** Unset it (or set to anything else) to disable tracing without uninstalling.
+- **`TRACE_TO_LANGFUSE=true` enables the Langfuse exporter.** The shared OTLP exporter uses its own endpoint and enable settings.
 - **Fail-open by design**: a hook crash never blocks the host agent. The trade-off is that silent SDK errors can drop traces — check `~/.<tool>/state/langfuse_hook.log` to confirm delivery.
 
-The hooks make **no outbound network call other than to the Langfuse host** specified in `LANGFUSE_BASE_URL`. They never auto-update themselves and never invoke a system package manager.
+Trace destinations come from the configured Langfuse and OTLP endpoints. The hooks never auto-update themselves and never invoke a system package manager.
 
 ---
 

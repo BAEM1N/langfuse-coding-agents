@@ -4,7 +4,7 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![langfuse ≥4.0](https://img.shields.io/badge/langfuse-%E2%89%A54.0-7c3aed.svg)](https://github.com/langfuse/langfuse-python)
 
-[English](README.md) | [한국어](README.ko.md)
+[English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
 Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode의
 대화 턴과 모델 입출력, 토큰 사용량, 도구 호출 순서를 기록합니다. 트레이스는
@@ -20,6 +20,8 @@ Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode�
 
 - [지원 에이전트](#지원-에이전트)
 - [빠른 시작](#빠른-시작)
+- [Grafana Tempo 연결](#grafana-tempo-연결)
+- [에이전트로 설치](#에이전트로-설치)
 - [어떤 tool 을 골라야 하나](#어떤-tool-을-골라야-하나)
 - [아키텍처](#아키텍처)
 - [호환성](#호환성)
@@ -34,18 +36,17 @@ Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode�
 
 ## 지원 에이전트
 
-공통 경로는 Claude Code, Codex CLI, OMP, Antigravity CLI, OpenCode 1.x에서 검증했습니다.
+Claude Code, Codex CLI, OMP, Antigravity CLI, OpenCode 1.x, Copilot CLI, Deep Agents SDK, Goose의 트레이스를 Langfuse와 Grafana Tempo에서 검증했습니다.
 Gemini CLI 개인·무료·Google AI Pro/Ultra 계정은 Antigravity CLI로 이전됐습니다.
-아래 Python 경로는 기존 환경의 호환성을 위해 제공합니다.
 [Google 마이그레이션 가이드](https://antigravity.google/docs/migrate-gemini-cli)
 
-| Tool | 경로 | Hook 위치 | 캡처 이벤트 |
-|------|------|-----------|-------------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [`tools/claude-code/`](tools/claude-code/) | `~/.claude/settings.json` | 4 — `Stop`, `Notification`, `PreToolUse`, `PostToolUse` |
-| [Codex CLI 0.128+](https://github.com/openai/codex) | [`tools/codex/`](tools/codex/) | `~/.codex/hooks.json` | 6 — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` |
-| [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) | [`tools/oh-my-codex/`](tools/oh-my-codex/) | `~/.omx/hooks/` + `~/.codex/hooks.json` bridge | OMX 네이티브 이벤트 + Codex 네이티브 bridge |
-| [OpenCode](https://github.com/sst/opencode) | [`tools/opencode/`](tools/opencode/) | `~/.config/opencode/plugins/` (JS plugin → Python hook) | `session.*`, `message.updated`, `message.part.updated` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | [`tools/gemini-cli/`](tools/gemini-cli/) | `~/.gemini/settings.json` | 11 — 전체 lifecycle (`SessionStart` → `SessionEnd`, 모든 agent/model/tool 단계 + `Notification`, `PreCompress`) |
+| 에이전트 | 설정 방법 | 전송 대상 |
+| --- | --- | --- |
+| Claude Code, Codex CLI, Antigravity CLI | [공통 설치 스크립트](#2-에이전트-훅-설치) | Langfuse, OTLP |
+| OMP, OpenCode 1.x, Copilot CLI | [공통 설치 스크립트](#2-에이전트-훅-설치) | Langfuse, OTLP |
+| Deep Agents SDK | [Python 콜백](tools/deepagents/) | Langfuse, OTLP |
+| Goose | [네이티브 OTLP와 Collector](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) | OTLP, Langfuse |
+| oh-my-codex, 기존 Gemini CLI | [OMX 브리지](tools/oh-my-codex/) · [Gemini CLI 훅](tools/gemini-cli/) | Langfuse |
 
 Python 경로의 Langfuse SDK 요구사항은 [SDK 호환성](#sdk-호환성)을 참고하세요.
 
@@ -53,25 +54,80 @@ Python 경로의 Langfuse SDK 요구사항은 [SDK 호환성](#sdk-호환성)을
 
 ## 빠른 시작
 
-```bash
+Node.js 22.18 이상과 관측할 코딩 에이전트를 설치합니다. OpenCode 1.x를 쓸 때는 `venv`를 지원하는 Python도 필요합니다. Windows에서 Copilot CLI 명령 훅을 쓰려면 PowerShell 7을 사용하세요.
+
+```sh
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git
-cd langfuse-coding-agents/tools/<your-tool>      # 예: tools/opencode
-bash install.sh                                  # Windows: ./install.ps1
+cd langfuse-coding-agents
 ```
 
-Installer 동작:
-- `langfuse_hook.py` 를 tool 의 config 디렉토리로 복사
-- Langfuse 자격증명을 받아 `.env` 작성
-- tool 의 기존 settings/hooks JSON 에 hook 항목을 **머지** (덮어쓰지 않음)
-- tool 별 1회 추가 단계 안내 (예: Codex `/hooks` trust prompt)
+### 1. Langfuse 설정
 
-### Agent 기반 자동 셋업
+`~/.config/langfuse-agent-hooks/.env` 파일을 만듭니다. Windows에서는 `%USERPROFILE%\.config\langfuse-agent-hooks\.env`입니다. 아래 예시의 주소와 키를 자신의 Langfuse 프로젝트 값으로 바꾸세요. 기존 로컬 설정에 키가 있으면 설치 스크립트가 재사용할 수 있습니다.
 
-installer 프롬프트를 직접 응답하기 싫다면, 이 repo 를 코딩 에이전트 (Claude Code, Codex, Cursor, Gemini CLI …) 에 넘기고 다음과 같이 시키세요:
+```dotenv
+TRACE_TO_LANGFUSE=true
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
+LANGFUSE_SECRET_KEY=sk-lf-your-project-key
+```
+
+### 2. 에이전트 훅 설치
+
+저장소 루트에서 운영체제에 맞는 명령을 실행합니다. 예시는 Claude Code와 Codex를 설치합니다. `omp`, `antigravity`, `copilot`, `opencode` 등 필요한 항목을 쉼표로 구분해 지정할 수 있습니다.
+
+```powershell
+./scripts/setup.ps1 --agents 'claude,codex'
+```
+
+```sh
+sh scripts/setup.sh --agents claude,codex
+```
+
+이름을 묻는 메시지에서 Enter만 누르면 홈 폴더명을 사용합니다. `--name`으로 직접 지정할 수 있습니다. `--device`는 장비 이름, `--environment`는 `local`이나 `ci` 같은 환경 이름입니다. 설치 후 에이전트를 다시 실행하세요. Codex에서는 `/hooks`에서 새로 등록된 훅을 검토합니다.
+
+### 3. 실제 트레이스 확인
+
+테스트 폴더의 `probe.txt`에 고유한 문구를 적고, 에이전트에게 파일을 읽어 그대로 답하도록 요청하세요. Langfuse의 새 트레이스에서 `모델 → 도구 → 모델` 순서, 도구 인수·결과, 모델별 입력·출력 토큰을 확인합니다. 표시되는 항목은 어댑터와 본문 수집 설정에 따라 달라집니다.
+
+```sh
+node ts/src/cli.ts doctor claude
+node ts/src/cli.ts audit-langfuse claude --limit 10
+```
+
+Codex 설정에 프로젝트 키가 있다면 위 명령에서 `claude`를 `codex`로 바꾸세요. [Deep Agents SDK](tools/deepagents/)와 [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector)는 각각 콜백과 네이티브 OTLP를 사용합니다.
+
+## Grafana Tempo 연결
+
+훅은 Langfuse로 트레이스를 보내고, Collector는 OTLP 사본을 Tempo로 전달합니다. Grafana는 Tempo에서 트레이스를 조회합니다. Goose는 Collector를 거쳐 두 곳에 전송합니다. Grafana, Tempo, OpenTelemetry Collector 바이너리가 필요합니다. Collector에는 `file`, `resource`, `otlp_http` 구성 요소가 있어야 합니다.
+
+**Windows**
+
+```powershell
+node scripts/start-grafana.mjs --tempo 'C:\path\tempo.exe' --grafana 'C:\path\grafana-home'
+./scripts/setup.ps1 --agents 'claude,codex' --collector 'C:\path\otelcol.exe' --tempo http://127.0.0.1:14328/v1/traces --capture-content
+```
+
+**macOS·Linux**
+
+```sh
+node scripts/start-grafana.mjs --tempo /path/to/tempo --grafana /path/to/grafana-home
+sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo http://127.0.0.1:14328/v1/traces --capture-content
+```
+
+`--grafana`에는 압축을 푼 Grafana 폴더를, 설치 스크립트의 `--tempo`에는 OTLP 수신 URL을 지정합니다. 예제 Collector는 필요할 때 시작됩니다. 기존 Collector의 YAML을 바꿨다면 Collector를 재시작하세요. 지원되는 경로에서 프롬프트·응답·도구 본문까지 필요할 때 `--capture-content`를 사용합니다.
+
+로컬 [Coding agent traces 대시보드](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces)에서 트레이스 ID를 선택하고 모델이나 도구 스팬을 펼칩니다. 공통 OTLP 전송기의 본문은 `coding_agent.input`과 `coding_agent.output`, 토큰은 `gen_ai.usage.*`에서 확인할 수 있습니다. 기존 Collector를 쓴다면 `CODING_AGENT_OTLP_TRACES_ENDPOINT`에 HTTP 트레이스 수신 URL을 지정하세요. [상세 설정 및 에이전트 가이드](docs/setup-agent-observability.md)
+
+Grafana 계정으로 로그인하세요. 로컬에서 로그인 없이 읽기 전용으로 보려면 Grafana를 시작할 때 `start-grafana.mjs`에 `--anonymous-viewer`를 추가합니다.
+
+## 에이전트로 설치
+
+설치를 코딩 에이전트에 맡기려면 이 저장소를 열고 다음과 같이 요청하세요.
 
 > "내 `<tool>` 에 Langfuse 트레이싱 셋업해줘."
 
-Agent 가 [`AGENTS.md`](AGENTS.md) (Claude Code 는 [`CLAUDE.md`](CLAUDE.md) 자동 로드) 를 읽고, 자격증명을 인터뷰한 뒤 비대화식으로 설치를 진행합니다. AGENTS.md 는 agent 가 시스템 패키지 매니저 (apt, brew, winget 등) 를 **임의로 실행하지 않도록** 명시 — Python 이 없으면 OS 별 명령을 사용자에게 보여주고 사용자 손으로 실행하게 합니다.
+에이전트는 [`AGENTS.md`](AGENTS.md)에 따라 로컬 설정을 재사용하고, 훅을 등록한 뒤 테스트 트레이스를 확인할 수 있습니다. 새 Langfuse 키가 필요하면 [빠른 시작](#빠른-시작)의 로컬 `.env`에 추가하세요.
 
 ---
 
@@ -79,13 +135,13 @@ Agent 가 [`AGENTS.md`](AGENTS.md) (Claude Code 는 [`CLAUDE.md`](CLAUDE.md) 자
 
 | 상황 | 사용 |
 |------|------|
-| Claude Code 데일리 드라이버 | `tools/claude-code/` |
-| Codex CLI 0.128+ standalone (wrapper 없이) | `tools/codex/` |
+| Claude Code | [공통 설치 스크립트](#2-에이전트-훅-설치) |
+| Codex CLI 단독 실행 | [공통 설치 스크립트](#2-에이전트-훅-설치)와 `/hooks` 검토 |
 | Codex CLI 를 `oh-my-codex` npm wrapper 통해 사용 | `tools/oh-my-codex/` — Codex native bridge 도 함께 등록되므로 `tools/codex/` 별도 설치 불필요 |
 | OpenCode (Anthropic / OpenAI / OpenRouter / 로컬 LM Studio / Ollama 등 모든 provider) | `tools/opencode/` |
 | Gemini CLI (Google OAuth 또는 `GEMINI_API_KEY`) | `tools/gemini-cli/` |
 
-여러 tool 을 함께 쓴다면 하나씩 따로 설치하세요. 각자 자기 config 디렉토리에만 쓰고 global state 를 공유하지 않습니다.
+공통 설치 스크립트는 여러 에이전트를 한 번에 등록합니다. 에이전트별 훅 설정은 각 설정 폴더에 저장하고, 전송 대상 설정은 공유할 수 있습니다.
 
 ---
 
@@ -172,16 +228,16 @@ Langfuse 4.0 에서 원본 hook 이 의존하던 두 API 가 제거됨:
 
 ## 보안 및 프라이버시
 
-본 hook 은 **사용자의 대화 turn·tool 호출·모델 응답을 전부** 설정된 Langfuse 인스턴스로 전송합니다. 여기에는 prompt, 파일 경로, tool 출력 — host agent 가 보는 모든 것이 포함됩니다.
+어댑터와 본문 수집 설정에 따라 프롬프트, 응답, 파일 경로, 도구 결과가 지정된 백엔드로 전송될 수 있습니다.
 
 권장 사항:
 
 - **Langfuse self-host 권장**: 대화에 사내 코드·내부 URL·시크릿·PII 가 포함될 가능성이 있다면. `https://cloud.langfuse.com` 은 편리하지만 외부 서비스입니다.
 - **`.env` 는 시크릿 취급**: installer 가 권한 제한해서 쓰지만, 절대 commit 금지.
-- **`TRACE_TO_LANGFUSE=true` 는 하드 게이트**: unset 하거나 다른 값으로 두면 uninstall 없이 트레이싱만 끔.
+- **`TRACE_TO_LANGFUSE=true`**는 Langfuse 전송을 켭니다. 공통 OTLP 전송은 별도의 수신 URL과 활성화 설정을 사용합니다.
 - **Fail-open 설계**: hook crash 가 host agent 동작을 막지 않음. 단점은 silent SDK 에러가 trace 를 drop 시킬 수 있다는 점 — `~/.<tool>/state/langfuse_hook.log` 에서 emit 여부 확인.
 
-Hook 은 **`LANGFUSE_BASE_URL` 로 지정한 Langfuse 호스트 외 어떤 외부 호출도 하지 않습니다**. 자동 업데이트도, 시스템 패키지 매니저 호출도 없습니다.
+훅은 설정된 Langfuse와 OTLP 주소로 트레이스를 전송합니다. 자동 업데이트와 시스템 패키지 설치는 수행하지 않습니다.
 
 ---
 
