@@ -14,12 +14,14 @@ function decode(value: unknown): unknown {
 interface Observation {
   id: string;
   type: string;
+  name?: string;
   startTime: string;
   endTime?: string;
   input?: unknown;
   output?: unknown;
-  metadata?: { kind?: string; toolCallId?: string | number; issuedByObservationId?: string;
-    consumedByObservationId?: string; sourceStartTime?: string; sourceEndTime?: string };
+  usageDetails?: Record<string, number>;
+  metadata?: Record<string, unknown> & { kind?: string; toolCallId?: string | number;
+    issuedByObservationId?: string; consumedByObservationId?: string; sourceStartTime?: string; sourceEndTime?: string };
 }
 
 interface StoredTrace {
@@ -49,28 +51,61 @@ export function summarizeTurns(turns: Turn[]) {
   return { turns: turns.length, completed, tools, toolLinks, counts, affectedTurns };
 }
 
-function auditStoredTrace(trace: StoredTrace) {
+function nativeToolParts(value: unknown, result: boolean): unknown[] {
+  const messages = decode(value);
+  if (!Array.isArray(messages)) return [];
+  return messages.flatMap((message) => {
+    if (!Array.isArray(message?.parts)) return [];
+    return message.parts.flatMap((part: { type?: string; id?: unknown }) => {
+      if (part.type !== (result ? 'tool_call_response' : 'tool_call') || typeof part.id !== 'string') return [];
+      return result ? [{ role: 'tool', call_id: part.id }] : [{ type: 'tool_call', id: part.id }];
+    });
+  });
+}
+
+const hasValue = (value: unknown) => value !== undefined && value !== null && value !== '' && value !== 'null';
+
+export function auditStoredTrace(trace: StoredTrace) {
   const observations = Array.isArray(trace.observations) ? trace.observations : [];
-  const root = observations.find((span) => span.type === 'AGENT') ?? observations.find((span) => span.type === 'CHAIN');
+  const root = observations.find((span) => span.type === 'AGENT')
+    ?? observations.find((span) => span.type === 'CHAIN' || span.metadata?.['gen_ai.operation.name'] === 'invoke_agent');
+  const nativeAgent = root?.metadata?.['gen_ai.agent.name'];
+  // Goose emits a provider span and a chat wrapper for the same request. The
+  // provider span holds the message parts needed for call-ID correlation.
+  const isGeneration = (span: Observation) => span.type === 'GENERATION'
+    || (span.metadata?.['gen_ai.operation.name'] === 'chat'
+      && (nativeAgent !== 'goose' || span.name === 'stream_response_from_provider'));
   const steps: Turn['steps'] = [];
   let toolsWithoutIds = 0;
   let reversedSpans = 0;
   let outOfOrderToolLinks = 0;
   let tools = 0;
+  const coverage = { modelCalls: 0, modelInputs: 0, modelOutputs: 0, modelTokenUsage: 0, toolInputs: 0, toolOutputs: 0 };
   const linked = new Set<string>();
-  const generations = new Map(observations.filter((span) => span.type === 'GENERATION').map((span) => [span.id, span]));
+  const generations = new Map(observations.filter(isGeneration).map((span) => [span.id, span]));
   for (const span of observations) {
-    const isTool = span.type === 'TOOL' || span.metadata?.kind === 'tool';
+    const isTool = span.type === 'TOOL' || span.metadata?.kind === 'tool'
+      || span.metadata?.['gen_ai.operation.name'] === 'execute_tool';
     const sourceTiming = span.metadata?.kind === 'tool';
     const started = sourceTiming ? span.metadata?.sourceStartTime : span.startTime;
     const ended = sourceTiming ? span.metadata?.sourceEndTime : span.endTime;
     if (started && ended && Date.parse(ended) < Date.parse(started)) reversedSpans++;
-    if (span.type === 'GENERATION') {
+    if (isGeneration(span)) {
+      const nativeInput = span.metadata?.['gen_ai.input.messages'];
+      const nativeOutput = span.metadata?.['gen_ai.output.messages'];
+      coverage.modelCalls++;
+      coverage.modelInputs += Number(hasValue(span.input ?? nativeInput));
+      coverage.modelOutputs += Number(hasValue(span.output ?? nativeOutput));
+      coverage.modelTokenUsage += Number(hasValue(span.usageDetails?.input ?? span.metadata?.['gen_ai.usage.input_tokens'])
+        && hasValue(span.usageDetails?.output ?? span.metadata?.['gen_ai.usage.output_tokens']));
       steps.push({ kind: 'generation', key: span.id, name: 'generation', startTime: span.startTime,
-        endTime: span.endTime ?? span.startTime, input: decode(span.input), output: decode(span.output) });
+        endTime: span.endTime ?? span.startTime, input: span.input != null ? decode(span.input) : nativeToolParts(nativeInput, true),
+        output: span.output != null ? decode(span.output) : nativeToolParts(nativeOutput, false) });
     } else if (isTool) {
       tools++;
-      const callId = span.metadata?.toolCallId;
+      coverage.toolInputs += Number(hasValue(span.input ?? span.metadata?.['gen_ai.tool.call.arguments']));
+      coverage.toolOutputs += Number(hasValue(span.output ?? span.metadata?.['gen_ai.tool.call.result']));
+      const callId = span.metadata?.toolCallId ?? span.metadata?.['gen_ai.tool.call.id'];
       if ((typeof callId !== 'string' && typeof callId !== 'number') || callId === '') {
         toolsWithoutIds++;
         continue;
@@ -90,19 +125,20 @@ function auditStoredTrace(trace: StoredTrace) {
   // Check observed links and durations, but do not declare missing ends on those exports.
   const complete = trace.metadata?.complete === true && toolsWithoutIds === 0
     && steps.some((step) => step.kind === 'tool');
+  steps.sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
   const turn: Turn = { key: trace.id, index: 1, sessionId: '', offset: 0, complete,
     startTime: root?.startTime ?? trace.timestamp, endTime: root?.endTime ?? root?.startTime ?? trace.timestamp,
     steps, events: [], metadata: {} };
   const tags = Array.isArray(trace.tags) ? trace.tags : [];
-  const supported = ['claude-code', 'codex', 'oh-my-pi', 'omp', 'antigravity', 'opencode', 'gemini-cli', 'oh-my-codex'];
-  const agent = supported.find((name) => trace.metadata?.agent === name || tags.includes(name)) ?? 'unknown';
+  const supported = ['claude-code', 'codex', 'oh-my-pi', 'omp', 'antigravity', 'opencode', 'gemini-cli', 'oh-my-codex', 'goose'];
+  const agent = supported.find((name) => trace.metadata?.agent === name || tags.includes(name) || nativeAgent === name) ?? 'unknown';
   const analysis = analyzeTimeline(turn);
   for (const [key, link] of analysis.links) {
     if (link.issuedBy && link.consumedBy) linked.add(key);
   }
   const counts: Record<string, number> = {};
   for (const issue of analysis.issues) counts[issue.name] = (counts[issue.name] ?? 0) + 1;
-  return { agent, tools, toolsWithoutIds, toolLinks: linked.size, reversedSpans, outOfOrderToolLinks, counts };
+  return { agent, tools, toolsWithoutIds, toolLinks: linked.size, reversedSpans, outOfOrderToolLinks, coverage, counts };
 }
 
 export async function auditLangfuse(client: LangfuseClient, limit: number) {
@@ -110,19 +146,25 @@ export async function auditLangfuse(client: LangfuseClient, limit: number) {
   const query = new URLSearchParams({ limit: String(limit), fromTimestamp: since });
   const page = await client.read<{ data: Array<{ id: string }> }>('/api/public/traces?' + query);
   const groups: Record<string, { traces: number; tools: number; toolLinks: number; toolsWithoutIds: number;
-    reversedSpans: number; outOfOrderToolLinks: number; counts: Record<string, number> }> = {};
+    reversedSpans: number; outOfOrderToolLinks: number; coverage: ReturnType<typeof auditStoredTrace>['coverage']; counts: Record<string, number> }> = {};
   for (let i = 0; i < page.data.length; i += 4) {
     const traces = await Promise.all(page.data.slice(i, i + 4).map(({ id }) =>
       client.read<StoredTrace>('/api/public/traces/' + encodeURIComponent(id))));
     for (const trace of traces) {
       const row = auditStoredTrace(trace);
-      const group = groups[row.agent] ??= { traces: 0, tools: 0, toolLinks: 0, toolsWithoutIds: 0, reversedSpans: 0, outOfOrderToolLinks: 0, counts: {} };
+      const group = groups[row.agent];
+      if (!group) {
+        const { agent, ...summary } = row;
+        groups[agent] = { traces: 1, ...summary };
+        continue;
+      }
       group.traces++;
       group.tools += row.tools;
       group.toolLinks += row.toolLinks;
       group.toolsWithoutIds += row.toolsWithoutIds;
       group.reversedSpans += row.reversedSpans;
       group.outOfOrderToolLinks += row.outOfOrderToolLinks;
+      for (const name of Object.keys(row.coverage) as Array<keyof typeof row.coverage>) group.coverage[name] += row.coverage[name];
       for (const [name, count] of Object.entries(row.counts)) group.counts[name] = (group.counts[name] ?? 0) + count;
     }
   }

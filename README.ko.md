@@ -1,4 +1,4 @@
-# langfuse-coding-agents
+# AI 코딩 에이전트 관측 · Langfuse와 OpenTelemetry
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -6,9 +6,12 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-> AI 코딩 에이전트를 위한 [Langfuse](https://langfuse.com) 네이티브 트레이싱. 하나의 monorepo, 일관된 통합 패턴, 5개 에이전트 런타임.
+Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode의
+대화 턴과 모델 입출력, 토큰 사용량, 도구 호출 순서를 기록합니다. 트레이스는
+[Langfuse](https://langfuse.com), OpenTelemetry Collector 또는 두 곳으로 보낼 수 있습니다.
 
-코딩 에이전트가 처리하는 모든 대화 turn·tool 호출·모델 응답이 Langfuse 대시보드의 구조화된 trace 로 기록됩니다. 에이전트 자체 코드는 손대지 않습니다.
+- [공통 훅 설치와 OTLP 설정](ts/README.md)
+- [에이전트 지원 범위와 실측 결과](docs/agent-observability.md)
 
 ---
 
@@ -30,6 +33,11 @@
 
 ## 지원 에이전트
 
+공통 경로는 Claude Code, Codex CLI, OMP, Antigravity CLI, OpenCode 1.x에서 검증했습니다.
+Gemini CLI 개인·무료·Google AI Pro/Ultra 계정은 Antigravity CLI로 이전됐습니다.
+아래 Python 경로는 기존 환경의 호환성을 위해 제공합니다.
+[Google 마이그레이션 가이드](https://antigravity.google/docs/migrate-gemini-cli)
+
 | Tool | 경로 | Hook 위치 | 캡처 이벤트 |
 |------|------|-----------|-------------|
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [`tools/claude-code/`](tools/claude-code/) | `~/.claude/settings.json` | 4 — `Stop`, `Notification`, `PreToolUse`, `PostToolUse` |
@@ -38,7 +46,7 @@
 | [OpenCode](https://github.com/sst/opencode) | [`tools/opencode/`](tools/opencode/) | `~/.config/opencode/plugins/` (JS plugin → Python hook) | `session.*`, `message.updated`, `message.part.updated` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | [`tools/gemini-cli/`](tools/gemini-cli/) | `~/.gemini/settings.json` | 11 — 전체 lifecycle (`SessionStart` → `SessionEnd`, 모든 agent/model/tool 단계 + `Notification`, `PreCompress`) |
 
-5개 adapter 모두 v0.1.0 기준 동작 검증 완료. 공통적으로 fail-open 동작, `TRACE_TO_LANGFUSE=true` runtime gate, Langfuse SDK 4.x 호환 (3.x deployment 도 in-hook shim 으로 그대로 작동 — [SDK 호환성](#sdk-호환성) 참조).
+Python 경로의 Langfuse SDK 요구사항은 [SDK 호환성](#sdk-호환성)을 참고하세요.
 
 ---
 
@@ -193,7 +201,7 @@ PR 환영. 자주 기여하는 영역:
 
 - **새 에이전트 adapter**. 기존 layout (`langfuse_hook.py`, `install.sh`, `install.ps1`, `README.md`, `AGENTS.md`) 미러해서 `tools/<your-agent>/` 추가.
 - **Hook event matrix 업데이트**: upstream 에이전트가 이벤트 추가 시. [`docs/hook-event-matrix.md`](docs/hook-event-matrix.md) 동기화 유지.
-- **Core 파이프라인 개선**: 5 hook 이 의도적으로 거의 동일하므로, 공통 로직을 변경할 때는 **5개 hook 을 한 번에 패치**. 오늘의 SDK 4.x 마이그레이션 (커밋 `8f2db84` + `b08d2ca`) 이 표준 예시.
+- **공통 파이프라인 개선**: `ts/src/core/`를 수정하고 `ts/`에서 `npm test`로 검증합니다. 기존 Python 통합은 독립적으로 동작합니다.
 
 스타일: 작고 원자적인 커밋, conventional commit prefix (`fix:`, `feat:`, `docs:`, `chore:`), 자동 생성 attribution 푸터 사용 금지.
 

@@ -8,6 +8,7 @@ import { analyzeTimeline } from '../src/core/timeline.ts';
 import { turnToEvents } from '../src/core/batch.ts';
 import { parseOmpSession } from '../src/adapters/omp.ts';
 import { loadOtlpConfig, otlpPayload } from '../src/core/otlp.ts';
+import { auditStoredTrace } from '../src/core/audit.ts';
 import type { Turn } from '../src/core/types.ts';
 
 const time = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -77,6 +78,28 @@ test('reports early, duplicate and orphaned results while separating incomplete 
   turn.complete = false;
   assert.deepEqual(analyzeTimeline(turn).issues.map((event) => event.name).sort(),
     ['duplicate_tool_result', 'tool_result_before_call']);
+});
+
+test('audits native Goose spans and reports a missing final response without double-counting chat', () => {
+  const chat = { 'gen_ai.operation.name': 'chat' };
+  const trace = auditStoredTrace({ id: 'goose', timestamp: time(1), observations: [
+    { id: 'root', type: 'SPAN', startTime: time(1), metadata: {
+      'gen_ai.operation.name': 'invoke_agent', 'gen_ai.agent.name': 'goose' } },
+    { id: 'wrapper', name: 'chat', type: 'SPAN', startTime: time(2), metadata: chat },
+    { id: 'g1', name: 'stream_response_from_provider', type: 'SPAN', startTime: time(2), endTime: time(3), metadata: {
+      ...chat, 'gen_ai.input.messages': '[{"role":"user"}]',
+      'gen_ai.output.messages': '[{"role":"assistant","parts":[{"type":"tool_call","id":"a"}]}]',
+      'gen_ai.usage.input_tokens': 10, 'gen_ai.usage.output_tokens': 2 } },
+    { id: 't1', type: 'SPAN', startTime: time(3), endTime: time(4), metadata: {
+      'gen_ai.operation.name': 'execute_tool', 'gen_ai.tool.call.id': 'a',
+      'gen_ai.tool.call.arguments': '{}', 'gen_ai.tool.call.result': 'fixture output' } },
+    { id: 'g2', name: 'stream_response_from_provider', type: 'SPAN', startTime: time(4), metadata: {
+      ...chat, 'gen_ai.input.messages': '[{"role":"tool","parts":[{"type":"tool_call_response","id":"a"}]}]' } },
+  ] });
+  assert.equal(trace.agent, 'goose');
+  assert.equal(trace.toolLinks, 1);
+  assert.deepEqual(trace.coverage, { modelCalls: 2, modelInputs: 2, modelOutputs: 1,
+    modelTokenUsage: 1, toolInputs: 1, toolOutputs: 1 });
 });
 
 test('OMP uses the active branch and pairs provider tool results by ID', () => {

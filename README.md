@@ -1,4 +1,4 @@
-# langfuse-coding-agents
+# Langfuse and OpenTelemetry for AI coding agents
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -6,19 +6,21 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-> Native [Langfuse](https://langfuse.com) tracing for AI coding agents. One monorepo, one integration pattern, five agent runtimes.
+`langfuse-coding-agents` adds LLM observability to Claude Code, OpenAI Codex CLI,
+Oh My Pi (OMP), Google Antigravity CLI, and OpenCode. It captures coding agent turns,
+model input/output and token usage, and tool execution spans that link each call to
+the model requests around it. Export to [Langfuse](https://langfuse.com), an
+[OpenTelemetry Collector](https://opentelemetry.io/docs/collector/), or both.
 
-Every conversation turn, tool call, and model response from your coding agent becomes a structured trace in Langfuse — without modifying the agent itself.
-
-The [shared hook runtime](ts/README.md) covers Claude Code, Codex, OMP, and Antigravity,
-and works with the OpenCode turn exporter. It links tool calls to model executions
-and supports [OpenTelemetry traces](ts/README.md#opentelemetry-traces) alongside Langfuse.
+- [Installation and OTLP configuration](ts/README.md)
+- [Agent compatibility and live verification](docs/agent-observability.md)
+- [Capture controls and privacy](#security--privacy)
 
 ---
 
 ## Contents
 
-- [Supported agents](#supported-agents)
+- [Supported AI coding agents](#supported-ai-coding-agents)
 - [Quick start](#quick-start)
 - [Choose your tool](#choose-your-tool)
 - [Architecture](#architecture)
@@ -32,21 +34,45 @@ and supports [OpenTelemetry traces](ts/README.md#opentelemetry-traces) alongside
 
 ---
 
-## Supported agents
+## Supported AI coding agents
 
-| Tool | Path | Hook config | Events captured |
-|------|------|-------------|-----------------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | [`tools/claude-code/`](tools/claude-code/) | `~/.claude/settings.json` | 4 — `Stop`, `Notification`, `PreToolUse`, `PostToolUse` |
-| [Codex CLI 0.128+](https://github.com/openai/codex) | [`tools/codex/`](tools/codex/) | `~/.codex/hooks.json` | 6 — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` |
-| [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) | [`tools/oh-my-codex/`](tools/oh-my-codex/) | `~/.omx/hooks/` + `~/.codex/hooks.json` bridge | OMX-native events + Codex native bridge |
-| [OpenCode](https://github.com/sst/opencode) | [`tools/opencode/`](tools/opencode/) | `~/.config/opencode/plugins/` (JS plugin → Python hook) | `session.*`, `message.updated`, `message.part.updated` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | [`tools/gemini-cli/`](tools/gemini-cli/) | `~/.gemini/settings.json` | 11 — full lifecycle (`SessionStart` → `SessionEnd`, all agent/model/tool phases, `Notification`, `PreCompress`) |
+| Agent | Installation | Trace destination |
+| --- | --- | --- |
+| Claude Code | [Native hooks](ts/README.md) | Langfuse and OTLP |
+| OpenAI Codex CLI | [Native hooks](ts/README.md) | Langfuse and OTLP |
+| Oh My Pi (OMP) | [Extension](ts/README.md#oh-my-pi-extension) | Langfuse and OTLP |
+| Google Antigravity CLI (`agy`) | [Native hooks](ts/README.md#antigravity) | Langfuse and OTLP |
+| OpenCode 1.x | [Plugin and turn exporter](tools/opencode/) | Langfuse and OTLP turn traces |
+| oh-my-codex (OMX) | [Native bridge](tools/oh-my-codex/) | Langfuse |
+| Gemini CLI (legacy) | [Compatibility integration](tools/gemini-cli/) | Langfuse |
 
-All five adapters are verified working as of v0.1.0. They share fail-open behavior, a `TRACE_TO_LANGFUSE=true` runtime gate, and Langfuse SDK 4.x compatibility (with a built-in shim for 3.x deployments — see [SDK compatibility](#sdk-compatibility)).
+Use Antigravity CLI for eligible personal Google accounts. Google migrated free
+individual, Google AI Pro, and Google AI Ultra access on June 18, 2026. The Gemini
+CLI adapter remains available for existing compatible deployments. [Google migration guide](https://antigravity.google/docs/migrate-gemini-cli)
 
 ---
 
 ## Quick start
+
+With Node.js 22.18+:
+
+```bash
+git clone https://github.com/BAEM1N/langfuse-coding-agents.git
+cd langfuse-coding-agents/ts
+node src/cli.ts install claude     # or: codex, antigravity
+```
+
+Configure an exporter in the agent's environment. For example, use a local
+OpenTelemetry Collector HTTP receiver:
+
+```dotenv
+CODING_AGENT_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
+```
+
+For Langfuse keys, OpenCode and OMP setup, and model/tool body capture controls,
+follow the [runtime configuration guide](ts/README.md).
+
+### Python integrations
 
 ```bash
 git clone https://github.com/BAEM1N/langfuse-coding-agents.git
@@ -78,13 +104,19 @@ The agent will read [`AGENTS.md`](AGENTS.md) (or [`CLAUDE.md`](CLAUDE.md) for Cl
 | Codex CLI 0.128+ standalone (no wrapper) | `tools/codex/` |
 | Codex CLI through the `oh-my-codex` npm wrapper | `tools/oh-my-codex/` — its installer also registers the Codex native bridge, so a separate `tools/codex/` install is unnecessary |
 | OpenCode (any provider: Anthropic, OpenAI, OpenRouter, local LM Studio / Ollama, ...) | `tools/opencode/` |
-| Gemini CLI (Google OAuth or `GEMINI_API_KEY`) | `tools/gemini-cli/` |
+| Antigravity CLI for Google personal accounts | [Antigravity hooks](ts/README.md#antigravity) |
+| Existing Gemini CLI deployment | `tools/gemini-cli/` |
 
 If you run multiple tools, install them one by one — each writes to its own config directory and shares no global state.
 
 ---
 
 ## Architecture
+
+The shared pipeline combines native hooks or a transcript/extension with turn
+reconstruction, token usage, and tool-call correlation. It sends spans to Langfuse
+or an OTLP/HTTP JSON receiver. The standalone Python adapters use their legacy
+Langfuse pipeline below.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -157,6 +189,25 @@ If you're embedding these hooks elsewhere, replicate the shim or migrate to `pro
 
 ## Documentation
 
+### What can I verify in a coding-agent trace?
+
+The [Langfuse audit commands](ts/README.md#verify-call-order-and-monitoring-coverage) report observed
+model and tool input/output coverage, token usage, timing anomalies, and call-ID
+links. Counts show which fields were present. They work with the shared hook runtime
+and recognize the GenAI metadata in Goose's native Langfuse spans.
+
+### Can I send coding-agent traces to Grafana Tempo or Jaeger?
+
+Yes. Configure the hooks to send OTLP/HTTP JSON to an OpenTelemetry Collector or a
+compatible traces endpoint. The Collector can route the same spans to Tempo,
+Jaeger, Honeycomb, or a Datadog intake. [Export configuration](ts/README.md#opentelemetry-traces)
+
+### What is the difference between a supported adapter and an evaluated agent?
+
+A supported adapter ships with a configured path to a trace destination. An evaluated
+agent has a documented signal source, a local smoke test, or both. The
+[compatibility matrix](docs/agent-observability.md) lists evidence and limits by agent.
+
 - [`AGENTS.md`](AGENTS.md) — umbrella setup guide for AI coding agents (clone repo → hand to agent → done).
 - [`CLAUDE.md`](CLAUDE.md) — thin pointer for Claude Code's auto-load behavior.
 - [`docs/hook-event-matrix.md`](docs/hook-event-matrix.md) — side-by-side event mapping across all five agents.
@@ -197,7 +248,7 @@ PRs welcome. Common contribution targets:
 
 - **New agent adapter.** Drop a `tools/<your-agent>/` subdir mirroring the existing layout (`langfuse_hook.py`, `install.sh`, `install.ps1`, `README.md`, `AGENTS.md`).
 - **Hook event matrix updates** as upstream agents add events. Keep [`docs/hook-event-matrix.md`](docs/hook-event-matrix.md) in sync.
-- **Core pipeline improvements.** The five hooks are intentionally near-duplicates — **patch all five at once** when changing shared logic. The SDK 4.x migration in commits `8f2db84` + `b08d2ca` is a worked example.
+- **Core pipeline improvements.** Make shared changes in `ts/src/core/` and verify them with `npm test` from `ts/`. Legacy Python integrations remain self-contained.
 
 Style: small, atomic commits; conventional commit prefix (`fix:`, `feat:`, `docs:`, `chore:`); no auto-generated attribution footers.
 

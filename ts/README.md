@@ -1,6 +1,6 @@
 # langfuse-agent-hooks (TypeScript)
 
-Zero-dependency Langfuse tracing for **Claude Code** and **Codex CLI**, written in TypeScript and run directly by Node.js (no build step, no `node_modules` at runtime).
+Shared Langfuse and OpenTelemetry tracing for **Claude Code**, **Codex CLI**, **Oh My Pi**, and **Antigravity CLI**. The **OpenCode** turn exporter uses this runtime for OTLP. Node.js runs the TypeScript directly.
 
 This is an alternative to the Python hooks under `tools/`. It reads the same credential files (`~/.claude/.env`, `~/.codex/.env`), so you can switch between them freely.
 
@@ -109,7 +109,9 @@ node src/cli.ts audit omp <omp-session.jsonl>
 node src/cli.ts audit antigravity <transcript.jsonl>
 ```
 
-The audits print counts and issue codes. Langfuse audit reads up to the requested number
+The audits print counts and issue codes. The Langfuse audit also counts model and tool
+input/output and model token coverage. It recognizes GenAI attributes in Goose's native
+Langfuse spans and counts provider calls once. The audit reads up to the requested number
 of traces from the previous 24 hours in the configured project. If a legacy tool span
 lacks a call ID, it is counted as reduced coverage. Calls and results still present in
 its generation input and output can be correlated. Antigravity's local transcript
@@ -194,13 +196,10 @@ Install the runtime with `node src/cli.ts install` or specify its path in
 
 ## Additional agent candidates
 
-| Agent | Available evidence and integration work |
-| --- | --- |
-| Gemini CLI | The repository already ships a Langfuse hook. `BeforeModel`, `AfterModel`, `BeforeTool`, and `AfterTool` expose input/output. Group streamed model chunks and verify call IDs before moving this adapter to the shared exporter. [Gemini CLI hook reference](https://geminicli.com/docs/hooks/reference/) |
-| GitHub Copilot CLI | Repository hooks expose prompt and tool lifecycle events. Verify result IDs, response text and usage availability in the installed CLI before claiming full model coverage. [Copilot hooks](https://docs.github.com/en/copilot/concepts/customizations/hooks) |
-| Cursor | `preToolUse` and `postToolUse` are candidates for tool spans. Confirm each installed client surface provides a stable ID and verify final-response coverage separately. [Cursor hooks](https://prod.cursor.com/docs/hooks) |
-| Kiro | The hook set includes tool lifecycle events. Verify the per-event payload and model coverage on the intended CLI or IDE before wiring it into the exporter. [Kiro hooks](https://kiro.dev/docs/hooks/) |
-| oh-my-codex | The repository already has a Langfuse bridge. Audit duplicate Codex bridge and native hook events before enabling a shared OTLP route. [Existing bridge](../tools/oh-my-codex/README.md) |
+See the [coding agent compatibility matrix](../docs/agent-observability.md) for live
+results from Copilot CLI, Goose, and Deep Agents, plus integration paths for other
+agents. The shared Google path uses Antigravity CLI. The standalone Gemini CLI
+adapter remains available for existing deployments.
 
 ## Develop
 
