@@ -2,9 +2,13 @@
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
+## 项目简介
+
 采集 Claude Code、Codex CLI、Oh My Pi（OMP）、Antigravity CLI、OpenCode 1.x、GitHub Copilot CLI、Deep Agents SDK 和 Goose 的链路。在 Langfuse 或 Grafana 中查看模型输入输出、令牌用量和工具调用顺序。可采集的字段取决于代理及采集设置。[兼容性与实测结果](docs/agent-observability.md)
 
-## 配置 Langfuse
+## 安装和配置
+
+### 配置 Langfuse
 
 先安装 Node.js 22.18 或更高版本及要观测的编程代理。OpenCode 需要 Python 3.10 或更高版本，并支持 `venv` 和 `ensurepip`。如果默认 Python 版本较旧，请用 `--python /path/to/python3` 指定解释器。在 Windows 上使用 Copilot CLI 命令钩子时，请使用 PowerShell 7。
 
@@ -22,7 +26,7 @@ LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
 ```
 
-## 安装代理钩子
+### 安装代理钩子
 
 在仓库根目录运行命令。以下示例选择 Claude Code 和 Codex。也可用逗号分隔指定 `omp`、`antigravity`、`copilot`、`opencode` 等代理。
 
@@ -42,7 +46,7 @@ sh scripts/setup.sh --agents claude,codex
 
 [Deep Agents SDK](tools/deepagents/) 使用 Python 回调。[Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) 使用原生 OTLP 导出器。仓库也提供 [Gemini CLI 兼容钩子](tools/gemini-cli/) 和 [oh-my-codex 桥接](tools/oh-my-codex/)。
 
-## 接入 Grafana Tempo
+### 接入 Grafana Tempo
 
 准备 Grafana、Tempo 和 OpenTelemetry Collector 二进制文件。Collector 需要包含 `file`、`resource` 和 `otlp_http` 组件。通用钩子直接发送到 Langfuse，Collector 将 OTLP 副本发送到 Tempo。Goose 则通过 Collector 发送到两个目标。
 
@@ -64,7 +68,7 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 
 如果代理在另一台机器或容器中运行，请使用该环境可以访问的 Collector URL。如果现有 Collector 已经向 Langfuse 和 Tempo 转发，请参阅[共享 Collector 配置](docs/setup-agent-observability.md#use-an-existing-collector)。
 
-## 验证链路
+### 验证链路
 
 新建测试文件 `probe.txt`，写入唯一标记，请代理读取文件并原样返回。打开 Langfuse 和本地 [Grafana 仪表板](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces)，检查模型 → 工具 → 模型的顺序及对应的输入输出和令牌数。
 
@@ -76,3 +80,20 @@ node ts/src/cli.ts audit-langfuse claude --limit 10
 ```
 
 如果项目密钥保存在 Codex 配置中，请将 `claude` 替换为 `codex`。请在本地妥善保管包含密钥的 `.env`。[详细配置与代理安装指南](docs/setup-agent-observability.md) · [许可证](LICENSE)
+
+## 实测结果
+
+截至 **2026 年 11 月 19 日**，✅ 表示通过实际文件读取，在 Langfuse 和 Grafana Tempo 中都验证了提示词、工具参数和结果、最终响应、每次模型调用的令牌数，以及模型 → 工具 → 模型的调用顺序。
+
+| 代理 | Windows | macOS (Apple Silicon) | Debian 13 (ARM64) |
+| --- | :---: | :---: | :---: |
+| Claude Code | ✅ | ✅ | ✅ |
+| OpenAI Codex CLI | ✅ | ✅ | ✅ |
+| Oh My Pi (OMP) | ✅ | ✅ | ✅ |
+| Antigravity CLI (`agy`) | ✅ | ✅ | ✅ |
+| OpenCode 1.x | ✅ | ✅ | ✅ |
+| GitHub Copilot CLI | ✅ | ✅ | ✅ |
+| LangChain Deep Agents SDK | ✅ |  |  |
+| Goose | ✅ |  |  |
+
+Windows 上的 Antigravity 使用笔记本中原有的登录和钩子配置。Deep Agents 通过 SDK 回调验证，Goose 通过原生 Collector 中继验证。[验证详情](docs/agent-observability.md)

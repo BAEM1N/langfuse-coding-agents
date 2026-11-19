@@ -6,6 +6,8 @@
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
+## 프로젝트 소개
+
 Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode의
 대화 턴과 모델 입출력, 토큰 사용량, 도구 호출 순서를 기록합니다. 트레이스는
 [Langfuse](https://langfuse.com), OpenTelemetry Collector 또는 두 곳으로 보낼 수 있습니다.
@@ -13,14 +15,16 @@ Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode�
 - [공통 훅 설치와 OTLP 설정](ts/README.md)
 - [Windows·macOS·Linux 설치 및 Grafana Tempo 설정](docs/setup-agent-observability.md)
 - [에이전트 지원 범위와 실측 결과](docs/agent-observability.md)
+- [코딩 에이전트 로깅 현황](docs/agent-observability-status.ko.md)
 
 ---
 
 ## 목차
 
-- [지원 에이전트](#지원-에이전트)
 - [빠른 시작](#빠른-시작)
 - [Grafana Tempo 연결](#grafana-tempo-연결)
+- [실측 결과](#실측-결과)
+- [지원 에이전트](#지원-에이전트)
 - [에이전트로 설치](#에이전트로-설치)
 - [어떤 tool 을 골라야 하나](#어떤-tool-을-골라야-하나)
 - [아키텍처](#아키텍처)
@@ -31,24 +35,6 @@ Claude Code, OpenAI Codex CLI, Oh My Pi(OMP), Google Antigravity CLI, OpenCode�
 - [기여](#기여)
 - [연혁](#연혁)
 - [License](#license)
-
----
-
-## 지원 에이전트
-
-Claude Code, Codex CLI, OMP, Antigravity CLI, OpenCode 1.x, Copilot CLI, Deep Agents SDK, Goose의 트레이스를 Langfuse와 Grafana Tempo에서 검증했습니다.
-Gemini CLI 개인·무료·Google AI Pro/Ultra 계정은 Antigravity CLI로 이전됐습니다.
-[Google 마이그레이션 가이드](https://antigravity.google/docs/migrate-gemini-cli)
-
-| 에이전트 | 설정 방법 | 전송 대상 |
-| --- | --- | --- |
-| Claude Code, Codex CLI, Antigravity CLI | [공통 설치 스크립트](#2-에이전트-훅-설치) | Langfuse, OTLP |
-| OMP, OpenCode 1.x, Copilot CLI | [공통 설치 스크립트](#2-에이전트-훅-설치) | Langfuse, OTLP |
-| Deep Agents SDK | [Python 콜백](tools/deepagents/) | Langfuse, OTLP |
-| Goose | [네이티브 OTLP와 Collector](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) | OTLP, Langfuse |
-| oh-my-codex, 기존 Gemini CLI | [OMX 브리지](tools/oh-my-codex/) · [Gemini CLI 훅](tools/gemini-cli/) | Langfuse |
-
-Python 경로의 Langfuse SDK 요구사항은 [SDK 호환성](#sdk-호환성)을 참고하세요.
 
 ---
 
@@ -120,6 +106,40 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 로컬 [Coding agent traces 대시보드](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces)에서 트레이스 ID를 선택하고 모델이나 도구 스팬을 펼칩니다. 공통 OTLP 전송기의 본문은 `coding_agent.input`과 `coding_agent.output`, 토큰은 `gen_ai.usage.*`에서 확인할 수 있습니다. 원격 장비나 컨테이너에서 에이전트를 실행하면 그 환경에서 접속할 수 있는 Collector URL을 사용하세요. 기존 Collector가 Langfuse와 Tempo 모두로 보내는 경우 [공용 Collector 설정](docs/setup-agent-observability.md#use-an-existing-collector)을 따르세요.
 
 Grafana 계정으로 로그인하세요. 로컬에서 로그인 없이 읽기 전용으로 보려면 Grafana를 시작할 때 `start-grafana.mjs`에 `--anonymous-viewer`를 추가합니다.
+
+## 실측 결과
+
+**2026년 11월 19일** 기준입니다. ✅는 실제 파일 읽기에서 프롬프트, 도구 인자·결과, 최종 응답, 모델별 토큰, 모델 → 도구 → 모델 순서를 Langfuse와 Grafana Tempo 양쪽에서 확인한 경우입니다.
+
+| 에이전트 | Windows | macOS (Apple Silicon) | Debian 13 (ARM64) |
+| --- | :---: | :---: | :---: |
+| Claude Code | ✅ | ✅ | ✅ |
+| OpenAI Codex CLI | ✅ | ✅ | ✅ |
+| Oh My Pi (OMP) | ✅ | ✅ | ✅ |
+| Antigravity CLI (`agy`) | ✅ | ✅ | ✅ |
+| OpenCode 1.x | ✅ | ✅ | ✅ |
+| GitHub Copilot CLI | ✅ | ✅ | ✅ |
+| LangChain Deep Agents SDK | ✅ |  |  |
+| Goose | ✅ |  |  |
+
+Windows의 Antigravity는 노트북에 저장된 로그인과 훅 설정을 그대로 사용했습니다. Deep Agents는 SDK 콜백으로, Goose는 네이티브 Collector 릴레이로 검증했습니다. [상세 실측 기록](docs/agent-observability-status.ko.md)
+
+## 지원 에이전트
+
+Gemini CLI 개인·무료·Google AI Pro/Ultra 계정은 Antigravity CLI로 이전됐습니다.
+[Google 마이그레이션 가이드](https://antigravity.google/docs/migrate-gemini-cli)
+
+| 에이전트 | 설정 방법 | 전송 대상 |
+| --- | --- | --- |
+| Claude Code, Codex CLI, Antigravity CLI | [공통 설치 스크립트](#2-에이전트-훅-설치) | Langfuse, OTLP |
+| OMP, OpenCode 1.x, Copilot CLI | [공통 설치 스크립트](#2-에이전트-훅-설치) | Langfuse, OTLP |
+| Deep Agents SDK | [Python 콜백](tools/deepagents/) | Langfuse, OTLP |
+| Goose | [네이티브 OTLP와 Collector](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) | OTLP, Langfuse |
+| oh-my-codex, 기존 Gemini CLI | [OMX 브리지](tools/oh-my-codex/) · [Gemini CLI 훅](tools/gemini-cli/) | Langfuse |
+
+Python 경로의 Langfuse SDK 요구사항은 [SDK 호환성](#sdk-호환성)을 참고하세요.
+
+---
 
 ## 에이전트로 설치
 

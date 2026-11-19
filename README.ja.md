@@ -2,9 +2,13 @@
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
+## プロジェクト概要
+
 Claude Code、Codex CLI、Oh My Pi（OMP）、Antigravity CLI、OpenCode 1.x、GitHub Copilot CLI、Deep Agents SDK、Goose のトレースを収集できます。モデルの入出力、トークン使用量、ツール呼び出しの順序を Langfuse や Grafana で調べられます。収集できる項目はエージェントと設定によって異なります。[対応範囲と検証結果](docs/agent-observability.md)
 
-## Langfuse の設定
+## セットアップ
+
+### Langfuse の設定
 
 Node.js 22.18 以上と、観測対象のエージェントを用意します。OpenCode には `venv` と `ensurepip` を備えた Python 3.10 以上が必要です。既定の Python が古い場合は `--python /path/to/python3` で指定します。Windows で Copilot CLI のコマンドフックを実行する場合は PowerShell 7 を使用します。
 
@@ -22,7 +26,7 @@ LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
 ```
 
-## エージェントのフックをインストール
+### エージェントのフックをインストール
 
 リポジトリのルートで実行します。以下は Claude Code と Codex の例です。`omp`、`antigravity`、`copilot`、`opencode` などをカンマ区切りで指定できます。
 
@@ -42,7 +46,7 @@ sh scripts/setup.sh --agents claude,codex
 
 [Deep Agents SDK](tools/deepagents/) には Python コールバックを追加します。[Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) はネイティブ OTLP エクスポーターを使用します。従来の [Gemini CLI フック](tools/gemini-cli/) と [oh-my-codex ブリッジ](tools/oh-my-codex/) も利用できます。
 
-## Grafana Tempo への送信を追加
+### Grafana Tempo への送信を追加
 
 Grafana、Tempo、OpenTelemetry Collector の実行ファイルを用意します。Collector には `file`、`resource`、`otlp_http` コンポーネントが必要です。共通フックは Langfuse に直接送信し、Collector は OTLP のコピーを Tempo に送ります。Goose の場合は Collector が両方に送信します。
 
@@ -64,7 +68,7 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 
 別の端末やコンテナでエージェントを実行する場合は、その環境から接続可能な Collector の URL を指定します。既存の Collector が Langfuse と Tempo の両方に転送する構成では、[共有 Collector の設定](docs/setup-agent-observability.md#use-an-existing-collector)を参照してください。
 
-## トレースの確認
+### トレースの確認
 
 テスト用の `probe.txt` に固有の文字列を入れ、エージェントに読み取ってそのまま返すよう依頼します。Langfuse とローカルの [Grafana ダッシュボード](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces) で対象のトレースを開き、モデル → ツール → モデルの順序、入出力、トークンを確認します。
 
@@ -76,3 +80,20 @@ node ts/src/cli.ts audit-langfuse claude --limit 10
 ```
 
 Codex 側の設定にキーがある場合は `claude` を `codex` に置き換えてください。認証情報を含む `.env` はローカルで管理してください。[詳細なセットアップとエージェント向けガイド](docs/setup-agent-observability.md) · [ライセンス](LICENSE)
+
+## 実測結果
+
+**2026年11月19日**の結果です。✅は、実際にファイルを読み取らせ、プロンプト、ツールの引数と結果、最終応答、モデル呼び出しごとのトークン数、モデル → ツール → モデルの順序を Langfuse と Grafana Tempo の両方で確認できたことを示します。
+
+| エージェント | Windows | macOS (Apple Silicon) | Debian 13 (ARM64) |
+| --- | :---: | :---: | :---: |
+| Claude Code | ✅ | ✅ | ✅ |
+| OpenAI Codex CLI | ✅ | ✅ | ✅ |
+| Oh My Pi (OMP) | ✅ | ✅ | ✅ |
+| Antigravity CLI (`agy`) | ✅ | ✅ | ✅ |
+| OpenCode 1.x | ✅ | ✅ | ✅ |
+| GitHub Copilot CLI | ✅ | ✅ | ✅ |
+| LangChain Deep Agents SDK | ✅ |  |  |
+| Goose | ✅ |  |  |
+
+Windows の Antigravity はノート PC に保存されていたログインとフック設定を使用しました。Deep Agents は SDK コールバック、Goose はネイティブ Collector リレーで検証しました。[検証の詳細](docs/agent-observability.md)

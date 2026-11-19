@@ -6,6 +6,8 @@
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
+## Project overview
+
 `langfuse-coding-agents` adds LLM observability to Claude Code, OpenAI Codex CLI,
 Oh My Pi (OMP), Google Antigravity CLI, and OpenCode. It captures coding agent turns,
 model input/output and token usage, and tool execution spans that link each call to
@@ -21,9 +23,10 @@ the model requests around it. Export to [Langfuse](https://langfuse.com), an
 
 ## Contents
 
-- [Supported AI coding agents](#supported-ai-coding-agents)
 - [Quick start](#quick-start)
 - [Add Grafana Tempo](#add-grafana-tempo)
+- [Live test results](#live-test-results)
+- [Supported AI coding agents](#supported-ai-coding-agents)
 - [Standalone Python integrations](#standalone-python-integrations)
 - [Agent-driven setup](#agent-driven-setup)
 - [Choose your tool](#choose-your-tool)
@@ -35,27 +38,6 @@ the model requests around it. Export to [Langfuse](https://langfuse.com), an
 - [Contributing](#contributing)
 - [History](#history)
 - [License](#license)
-
----
-
-## Supported AI coding agents
-
-| Agent | Installation | Trace destination |
-| --- | --- | --- |
-| Claude Code | [Native hooks](ts/README.md) | Langfuse and OTLP |
-| OpenAI Codex CLI | [Native hooks](ts/README.md) | Langfuse and OTLP |
-| Oh My Pi (OMP) | [Extension](ts/README.md#oh-my-pi-extension) | Langfuse and OTLP |
-| Google Antigravity CLI (`agy`) | [Native hooks](ts/README.md#antigravity) | Langfuse and OTLP |
-| OpenCode 1.x | [Plugin and turn exporter](tools/opencode/) | Langfuse and OTLP turn traces |
-| GitHub Copilot CLI | [User-level hook](ts/README.md#github-copilot-cli) | Langfuse and OTLP |
-| LangChain Deep Agents SDK | [Python callback](tools/deepagents/) | Langfuse and OTLP |
-| Goose | [Native OTLP via Collector](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) | OTLP and Langfuse |
-| oh-my-codex (OMX) | [Native bridge](tools/oh-my-codex/) | Langfuse |
-| Gemini CLI (legacy) | [Compatibility integration](tools/gemini-cli/) | Langfuse |
-
-Use Antigravity CLI for eligible personal Google accounts. Google migrated free
-individual, Google AI Pro, and Google AI Ultra access on June 18, 2026. The Gemini
-CLI adapter remains available for existing compatible deployments. [Google migration guide](https://antigravity.google/docs/migrate-gemini-cli)
 
 ---
 
@@ -127,6 +109,44 @@ sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo h
 Open the local [Coding agent traces dashboard](http://127.0.0.1:13000/d/coding-agent-traces/coding-agent-traces), select a trace ID, and expand its model or tool spans. `coding_agent.input`, `coding_agent.output`, and `gen_ai.usage.*` expose the payload and token fields in the shared OTLP exporter. If the agents run on another machine or inside a container, use a Collector URL reachable from that environment. If the existing Collector already forwards to both destinations, follow the [shared Collector setup](docs/setup-agent-observability.md#use-an-existing-collector).
 
 Sign in with your Grafana account. For a local read-only session without sign-in, pass `--anonymous-viewer` to `start-grafana.mjs` when starting Grafana.
+
+## Live test results
+
+On **November 19, 2026**, each ✅ marks a real file-read run whose prompt, tool arguments and result, final response, model token counts, and model → tool → model order were verified in both Langfuse and Grafana Tempo.
+
+| Agent | Windows | macOS (Apple Silicon) | Debian 13 (ARM64) |
+| --- | :---: | :---: | :---: |
+| Claude Code | ✅ | ✅ | ✅ |
+| OpenAI Codex CLI | ✅ | ✅ | ✅ |
+| Oh My Pi (OMP) | ✅ | ✅ | ✅ |
+| Antigravity CLI (`agy`) | ✅ | ✅ | ✅ |
+| OpenCode 1.x | ✅ | ✅ | ✅ |
+| GitHub Copilot CLI | ✅ | ✅ | ✅ |
+| LangChain Deep Agents SDK | ✅ |  |  |
+| Goose | ✅ |  |  |
+
+Windows Antigravity was checked with the laptop’s existing login and hooks. Deep Agents used the SDK callback, and Goose used the native Collector relay. [Verification details](docs/agent-observability.md)
+
+## Supported AI coding agents
+
+| Agent | Installation | Trace destination |
+| --- | --- | --- |
+| Claude Code | [Native hooks](ts/README.md) | Langfuse and OTLP |
+| OpenAI Codex CLI | [Native hooks](ts/README.md) | Langfuse and OTLP |
+| Oh My Pi (OMP) | [Extension](ts/README.md#oh-my-pi-extension) | Langfuse and OTLP |
+| Google Antigravity CLI (`agy`) | [Native hooks](ts/README.md#antigravity) | Langfuse and OTLP |
+| OpenCode 1.x | [Plugin and turn exporter](tools/opencode/) | Langfuse and OTLP turn traces |
+| GitHub Copilot CLI | [User-level hook](ts/README.md#github-copilot-cli) | Langfuse and OTLP |
+| LangChain Deep Agents SDK | [Python callback](tools/deepagents/) | Langfuse and OTLP |
+| Goose | [Native OTLP via Collector](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) | OTLP and Langfuse |
+| oh-my-codex (OMX) | [Native bridge](tools/oh-my-codex/) | Langfuse |
+| Gemini CLI (legacy) | [Compatibility integration](tools/gemini-cli/) | Langfuse |
+
+Use Antigravity CLI for eligible personal Google accounts. Google migrated free
+individual, Google AI Pro, and Google AI Ultra access on June 18, 2026. The Gemini
+CLI adapter remains available for existing compatible deployments. [Google migration guide](https://antigravity.google/docs/migrate-gemini-cli)
+
+---
 
 ## Standalone Python integrations
 
