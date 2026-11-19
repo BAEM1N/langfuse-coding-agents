@@ -20,12 +20,15 @@ export interface Config {
   timeoutMs: number;
   otlp?: OtlpConfig;
   otlpError?: string;
+  collectorLauncher?: string;
 }
 
 export function agentHome(agent: TraceAgentName): string {
   if (agent === 'claude') return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
   if (agent === 'antigravity') return join(homedir(), '.gemini', 'antigravity-cli');
   if (agent === 'omp') return process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp', 'agent');
+  if (agent === 'copilot') return process.env.COPILOT_HOME || join(homedir(), '.copilot');
+  if (agent === 'deepagents') return join(homedir(), '.config', 'deepagents-observability');
   return process.env.CODEX_HOME || join(homedir(), '.codex');
 }
 
@@ -84,6 +87,7 @@ export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = proce
     agentHome: home,
     otlp,
     otlpError,
+    collectorLauncher: env.CODING_AGENT_COLLECTOR_LAUNCHER,
     enabled: (pick(env, 'TRACE_TO_LANGFUSE') ?? '').toLowerCase() === 'true',
     publicKey: pick(env, 'CC_LANGFUSE_PUBLIC_KEY', 'LANGFUSE_PUBLIC_KEY'),
     secretKey: pick(env, 'CC_LANGFUSE_SECRET_KEY', 'LANGFUSE_SECRET_KEY'),

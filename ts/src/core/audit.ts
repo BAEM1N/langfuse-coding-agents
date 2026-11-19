@@ -133,7 +133,7 @@ export function auditStoredTrace(trace: StoredTrace) {
     startTime: root?.startTime ?? trace.timestamp, endTime: root?.endTime ?? root?.startTime ?? trace.timestamp,
     steps, events: [], metadata: {} };
   const tags = Array.isArray(trace.tags) ? trace.tags : [];
-  const supported = ['claude-code', 'codex', 'oh-my-pi', 'omp', 'antigravity', 'opencode', 'gemini-cli', 'oh-my-codex', 'goose'];
+  const supported = ['claude-code', 'codex', 'oh-my-pi', 'omp', 'antigravity', 'opencode', 'gemini-cli', 'oh-my-codex', 'goose', 'copilot', 'deepagents'];
   const agent = supported.find((name) => trace.metadata?.agent === name || tags.includes(name) || nativeAgent === name) ?? 'unknown';
   const analysis = analyzeTimeline(turn);
   for (const [key, link] of analysis.links) {

@@ -159,7 +159,7 @@ end times, and links to the issuing and consuming generations.
 
 ## OpenTelemetry traces
 
-Claude Code, Codex, OMP, Antigravity, and the OpenCode turn exporter can send
+Claude Code, Codex, OMP, Antigravity, Copilot CLI, Deep Agents SDK, and the OpenCode turn exporter can send
 OTLP/HTTP JSON traces. Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the complete
 traces URL or `OTEL_EXPORTER_OTLP_ENDPOINT` for the base URL. Trace-specific
 headers and timeout take precedence over the generic `OTEL_EXPORTER_OTLP_HEADERS`
@@ -193,6 +193,35 @@ Install the runtime with `node src/cli.ts install` or specify its path in
 | Grafana Tempo | Route traces through a Collector to Tempo's OTLP receiver. [Tempo configuration](https://grafana.com/docs/tempo/latest/configuration/) |
 | Honeycomb | Send OTLP HTTP JSON directly or use a Collector. [Honeycomb Collector setup](https://docs.honeycomb.io/send-data/opentelemetry/collector) |
 | Datadog | Use a Collector with the Datadog OTLP intake configuration. [Datadog Collector setup](https://docs.datadoghq.com/opentelemetry/setup/collector_exporter/) |
+
+### GitHub Copilot CLI
+
+```bash
+node src/cli.ts install copilot
+```
+
+The installer adds a user-level `agentStop` hook in `~/.copilot/hooks/`. The hook
+reads the current transcript, joins model usage by API call ID, and joins tool
+results by tool call ID. Provider system prompts are outside transcript coverage.
+Put exporter settings in `~/.copilot/.env`. The Windows hook uses PowerShell 7.
+[Copilot user hooks](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks)
+
+### Deep Agents SDK and Goose
+
+For Python, attach the [Deep Agents callback](../tools/deepagents/README.md) to
+the run config. For Goose, use the native [Collector route](../docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector).
+
+The [example Collector](../docs/examples/collector.yaml) writes traces to a rotating
+local OTLP JSON file. Port `14318` stores traces already sent to Langfuse by the
+hooks. Port `14320` also forwards native Goose traces to Langfuse. The optional
+`CODING_AGENT_COLLECTOR_LAUNCHER` setting starts the Collector on demand. Copy the
+[launcher](../docs/examples/start-collector.mjs), Collector binary, and YAML into
+the deployed hook runtime's `collector/` directory. Provide the Langfuse project
+credentials through the local configuration.
+
+OpenTelemetry describes and transports spans. To browse them in a dashboard, route
+the Collector to that dashboard's storage backend. The local `file` exporter writes
+JSON records for inspection and replay.
 
 ## Additional agent candidates
 

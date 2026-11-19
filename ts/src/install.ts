@@ -54,10 +54,19 @@ export function mergeHooks(hooks: Record<string, unknown[]>, events: string[], e
 }
 
 export interface InstallPlan {
-  agent: AgentName | 'antigravity';
+  agent: AgentName | 'antigravity' | 'copilot';
   file: string;
   before: unknown;
   after: unknown;
+}
+
+export function planCopilotInstall(cliPath: string, nodePath = process.execPath): InstallPlan {
+  const file = join(agentHome('copilot'), 'hooks', 'langfuse-agent-hooks.json');
+  const bashQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const handler = { type: 'command', timeoutSec: 25,
+    bash: `${bashQuote(nodePath)} ${bashQuote(cliPath)} copilot-hook`,
+    powershell: `& ${psQuote(nodePath)} ${psQuote(cliPath)} copilot-hook` };
+  return { agent: 'copilot', file, before: readJson(file), after: { version: 1, hooks: { agentStop: [handler] } } };
 }
 
 export function planInstall(agent: AgentName, cliPath: string, nodePath = process.execPath, remove = false): InstallPlan {

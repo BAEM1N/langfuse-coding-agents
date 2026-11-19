@@ -43,6 +43,9 @@ the model requests around it. Export to [Langfuse](https://langfuse.com), an
 | Oh My Pi (OMP) | [Extension](ts/README.md#oh-my-pi-extension) | Langfuse and OTLP |
 | Google Antigravity CLI (`agy`) | [Native hooks](ts/README.md#antigravity) | Langfuse and OTLP |
 | OpenCode 1.x | [Plugin and turn exporter](tools/opencode/) | Langfuse and OTLP turn traces |
+| GitHub Copilot CLI | [User-level hook](ts/README.md#github-copilot-cli) | Langfuse and OTLP |
+| LangChain Deep Agents SDK | [Python callback](tools/deepagents/) | Langfuse and OTLP |
+| Goose | [Native OTLP via Collector](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) | OTLP and Langfuse |
 | oh-my-codex (OMX) | [Native bridge](tools/oh-my-codex/) | Langfuse |
 | Gemini CLI (legacy) | [Compatibility integration](tools/gemini-cli/) | Langfuse |
 

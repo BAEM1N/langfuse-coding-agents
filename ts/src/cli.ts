@@ -2,7 +2,7 @@
 // langfuse-agent-hooks — zero-dependency Langfuse tracing for AI coding agents.
 //
 //   node src/cli.ts hook <claude|codex>          (called by the agent; reads JSON on stdin)
-//   node src/cli.ts install [claude|codex|antigravity|all] [--dry-run]
+//   node src/cli.ts install [claude|codex|antigravity|copilot|all] [--dry-run]
 //   node src/cli.ts uninstall [claude|codex|antigravity|all]
 //   node src/cli.ts doctor [claude|codex]
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
@@ -14,15 +14,18 @@ import { basename } from 'node:path';
 import { loadConfig } from './core/config.ts';
 import { auditLangfuse, summarizeTurns } from './core/audit.ts';
 import { parseOmpSession } from './adapters/omp.ts';
+import { parseCopilotTurn } from './adapters/copilot.ts';
 import { runAntigravityHook } from './core/antigravity-hook.ts';
 import { auditAntigravity } from './adapters/antigravity.ts';
 import { readJsonlFrom } from './core/jsonl.ts';
-import { batchOptions, logPath, parseTranscript, runHook } from './core/run.ts';
+import { batchOptions, logPath, normalizePayload, parseTranscript, runHook } from './core/run.ts';
 import { turnToEvents } from './core/batch.ts';
 import { LangfuseClient } from './core/langfuse.ts';
 import { createLogger } from './core/log.ts';
 import { exportOtlp, loadOtlpConfig } from './core/otlp.ts';
-import { applyPlan, deployPackage, HOOK_EVENTS, planAntigravityInstall, planInstall } from './install.ts';
+import { canExport, exportEvents } from './core/export.ts';
+import { applyPlan, deployPackage, HOOK_EVENTS, planAntigravityInstall, planCopilotInstall, planInstall } from './install.ts';
+import type { Turn } from './core/types.ts';
 import type { AgentName } from './core/types.ts';
 
 const AGENTS: AgentName[] = ['claude', 'codex'];
@@ -73,6 +76,13 @@ async function cmdHook(agent: AgentName): Promise<void> {
 
 function cmdInstall(target: string | undefined, dryRun: boolean, remove: boolean): void {
   const cli = dryRun ? '<install-root>/src/cli.ts' : deployPackage();
+  if (target === 'copilot' && !remove) {
+    const plan = planCopilotInstall(cli, process.execPath);
+    if (dryRun) console.log(JSON.stringify(plan.after, null, 2));
+    else applyPlan(plan);
+    console.log(`[copilot] ${plan.file}`);
+    return;
+  }
   if (target === 'antigravity') {
     const plan = planAntigravityInstall(cli, process.execPath, remove);
     if (dryRun) console.log(JSON.stringify(plan.after, null, 2));
@@ -208,6 +218,40 @@ async function main(): Promise<void> {
     }
     case 'audit':
       return cmdAudit(a1, a2, rest);
+    case 'copilot-hook': {
+      const cfg = loadConfig('copilot', { ...process.env });
+      const log = createLogger(logPath(cfg), cfg.debug);
+      try {
+        const payload = normalizePayload(JSON.parse((await readStdin()).replace(/^﻿/, '') || '{}'));
+        if (!canExport(cfg)) { log.debug('Copilot skipped: no trace exporter configured'); return; }
+        if (typeof payload.session_id !== 'string' || typeof payload.transcript_path !== 'string') {
+          log.debug('Copilot skipped: hook lacks a session ID or transcript path');
+          return;
+        }
+        const stop = typeof payload.timestamp === 'number' ? new Date(payload.timestamp).toISOString() : new Date().toISOString();
+        const turn = parseCopilotTurn(readJsonlFrom(payload.transcript_path).entries, payload.session_id, stop);
+        if (!turn) { log.debug('Copilot skipped: transcript has no completed interaction'); return; }
+        const result = await exportEvents(cfg, turnToEvents(turn, batchOptions(cfg)), log);
+        if (!result.ok) log.error(`Copilot export failed (${result.errors.length} errors)`);
+        else log.debug('Copilot turn exported');
+      } catch { log.error('Could not export Copilot turn'); }
+      return;
+    }
+    case 'export-turn': {
+      if (a1 !== 'deepagents') throw new Error('export-turn expects deepagents');
+      const cfg = loadConfig(a1, { ...process.env });
+      if (!canExport(cfg)) return;
+      const turn = JSON.parse(await readStdin()) as Turn;
+      if (!turn.complete || typeof turn.sessionId !== 'string' || typeof turn.key !== 'string' || !Array.isArray(turn.steps)) {
+        throw new Error('Expected a completed agent turn');
+      }
+      const log = createLogger(logPath(cfg), cfg.debug);
+      if (!(await exportEvents(cfg, turnToEvents(turn, batchOptions(cfg)), log)).ok) {
+        log.error('Deep Agents turn export failed');
+        process.exitCode = 1;
+      }
+      return;
+    }
     case 'audit-langfuse':
       return cmdAuditLangfuse(a1, args);
     case 'backfill':

@@ -1,0 +1,34 @@
+receivers:
+  otlp/local:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:14318
+  otlp/goose:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:14320
+
+exporters:
+  file:
+    path: ${env:CODING_AGENT_OTLP_FILE}
+    rotation:
+      max_megabytes: 20
+      max_days: 7
+      max_backups: 3
+  otlp_http/langfuse:
+    traces_endpoint: ${env:CODING_AGENT_LANGFUSE_OTLP_URL}
+    headers:
+      Authorization: ${env:CODING_AGENT_LANGFUSE_AUTH}
+
+service:
+  telemetry:
+    metrics:
+      level: none
+      readers: []
+  pipelines:
+    traces/local:
+      receivers: [otlp/local]
+      exporters: [file]
+    traces/goose:
+      receivers: [otlp/goose]
+      exporters: [file, otlp_http/langfuse]

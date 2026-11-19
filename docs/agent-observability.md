@@ -16,9 +16,9 @@ destination.
 | --- | --- | --- | --- |
 | Google Antigravity CLI 1.5.11 | Prompt, tool arguments/result, final response | Input/output for both model calls | Native hook and transcript step index linked two generations and one tool in Langfuse and an OpenTelemetry Collector. |
 | Claude Code, OpenAI Codex CLI, OMP, OpenCode 1.x | Prompt, tool arguments/result, final response | Model input/output | Shared pipeline verified in Langfuse and an OpenTelemetry Collector. See the [runtime guide](../ts/README.md). |
-| GitHub Copilot CLI 1.0.114 | Prompt and tool arguments/result in hooks. Final response in JSONL; `agentStop` exposes a transcript path | `--usage-output-file` returned session aggregate input, output, cache read and cache write | The same `toolCallId` appeared before and after the tool and in JSONL. JSONL provided the model → tool → model sequence. Per-generation token attribution was unverified. [Copilot hooks](https://docs.github.com/en/copilot/reference/hooks-reference) |
+| GitHub Copilot CLI 1.0.114 | Prompt, tool arguments/result, and final response from the transcript exposed by `agentStop` | Per-model-call usage from `session.usage_record`, matched by API call ID | The installed user hook exported the model → tool → model sequence to Langfuse and the Collector. [Copilot hooks](https://docs.github.com/en/copilot/reference/hooks-reference) |
 | Goose 1.60.1 | Native OTLP includes model messages and tool arguments/result with content capture enabled | Model input/output and cache fields in OTLP | Collector → Langfuse OTLP preserved both model calls and tool order. Goose's separate direct Langfuse integration delivered partial final-call coverage in the short probe. [Goose OpenTelemetry](https://goose-docs.ai/docs/guides/environment-variables/#observability-configuration) · [Goose Langfuse](https://goose-docs.ai/docs/tutorials/langfuse/) |
-| LangChain Deep Agents SDK 0.7.40, Python | Human/AI/tool/AI messages and actual tool arguments, result and response | `usage_metadata` on both AI messages | Live LiteLLM-backed fixture matched tool call ID and completed the sequence in the SDK. Backend export needs a collector or callback integration. [Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview) |
+| LangChain Deep Agents SDK 0.7.40, Python | Human/AI/tool/AI messages and actual tool arguments, result and response | `usage_metadata` on both AI messages | The [callback](../tools/deepagents/) exported the full sequence and matched tool call ID to Langfuse and the Collector. [Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview) |
 | Cursor CLI `2026.11.19-f005e9d` | Local probe stopped at authentication | Unverified | The documented hook surface includes tool hooks and `afterAgentResponse`. [Cursor hooks](https://cursor.com/docs/hooks) |
 | Kiro CLI 3.5.0 | Local probe stopped at authentication | Unverified | Use the V3 harness and record tool hooks with headless `stream-json` after login. [Kiro CLI](https://kiro.dev/docs/cli/) · [Kiro hooks](https://kiro.dev/docs/hooks/) |
 
@@ -50,3 +50,14 @@ was verified with both model responses, the file read tool result, and model tok
 usage. The [Langfuse audit](../ts/README.md#verify-call-order-and-monitoring-coverage)
 joins provider and tool events by ID and counts the provider calls once.
 [Langfuse OpenTelemetry endpoint](https://langfuse.com/integrations/native/opentelemetry)
+
+For the [local Collector example](examples/collector.yaml), set these in the Goose
+process environment. Remove direct Langfuse credentials from that process when
+using the Collector relay to avoid sending duplicate traces.
+
+```dotenv
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14320/v1/traces
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+OTEL_TRACES_EXPORTER=otlp
+OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
+```

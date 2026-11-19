@@ -15,6 +15,8 @@ const LABELS: Record<TraceAgentName, { label: string; tag: string }> = {
   codex: { label: 'Codex', tag: 'codex' },
   omp: { label: 'Oh My Pi', tag: 'oh-my-pi' },
   antigravity: { label: 'Antigravity', tag: 'antigravity' },
+  copilot: { label: 'GitHub Copilot CLI', tag: 'copilot' },
+  deepagents: { label: 'Deep Agents', tag: 'deepagents' },
 };
 
 /** Accept both snake_case and camelCase payload keys. */

@@ -9,6 +9,7 @@ import { turnToEvents } from '../src/core/batch.ts';
 import { parseOmpSession } from '../src/adapters/omp.ts';
 import { loadOtlpConfig, otlpPayload } from '../src/core/otlp.ts';
 import { auditStoredTrace } from '../src/core/audit.ts';
+import { parseCopilotTurn } from '../src/adapters/copilot.ts';
 import type { Turn } from '../src/core/types.ts';
 
 const time = (seconds: number) => new Date(seconds * 1000).toISOString();
@@ -100,6 +101,32 @@ test('audits native Goose spans and reports a missing final response without dou
   assert.equal(trace.toolLinks, 1);
   assert.deepEqual(trace.coverage, { modelCalls: 2, modelInputs: 2, modelOutputs: 1,
     modelTokenUsage: 1, toolInputs: 1, toolOutputs: 1 });
+});
+
+test('Copilot binds per-request usage by API call ID and threads tool results into the next model call', () => {
+  const rows = [
+    ['user.message', 1, { messageId: 'u', content: 'read file' }],
+    ['assistant.turn_start', 2, { turnId: '1' }],
+    ['session.usage_record', 3, { usage: { apiCallId: 'request-a', inputTokens: 15, outputTokens: 3 } }],
+    ['assistant.message', 3, { messageId: 'a', turnId: '1', apiCallId: 'request-a', toolRequests: [{ toolCallId: 'r', name: 'view' }] }],
+    ['tool.execution_start', 3, { toolCallId: 'r', toolName: 'view', arguments: { path: 'probe.txt' } }],
+    ['tool.execution_complete', 4, { toolCallId: 'r', success: true, result: { content: 'contents' } }],
+    ['assistant.turn_start', 5, { turnId: '2' }],
+    ['session.usage_record', 6, { usage: { apiCallId: 'request-b', inputTokens: 20, cacheReadTokens: 12, outputTokens: 2 } }],
+    ['assistant.message', 6, { messageId: 'b', turnId: '2', apiCallId: 'request-b', content: 'contents' }],
+  ] as const;
+  const turn = parseCopilotTurn(rows.map(([type, at, data], offset) => ({ offset, value: { type, timestamp: time(at), data } })), 'session', time(7));
+  assert.ok(turn);
+  assert.equal(turn.output, 'contents');
+  const [first, tool, last] = turn.steps;
+  assert.equal(first.kind, 'generation');
+  assert.equal(first.usage?.input, 15);
+  assert.equal(tool.kind, 'tool');
+  assert.equal(tool.output, 'contents');
+  assert.equal(last.kind, 'generation');
+  assert.equal(last.usage?.input, 8);
+  assert.equal(last.usage?.input_cached_tokens, 12);
+  assert.equal(analyzeTimeline(turn).links.get('r')?.consumedBy?.key, 'b');
 });
 
 test('OMP uses the active branch and pairs provider tool results by ID', () => {
