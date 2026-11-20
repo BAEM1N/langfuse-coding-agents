@@ -73,7 +73,7 @@ Langfuse Cloud stopped storing trace events sent to `/api/public/ingestion` on 2
 
 A turn is sent once it has finished, and never sent again after Langfuse accepts it, because Langfuse v4 does not deduplicate span IDs. A turn left without a Stop event is closed and sent after its transcript has been idle for an hour. Prompt and tool bodies, turn events and adapter metadata are sent redacted, with the per-string limit `LANGFUSE_HOOK_MAX_CHARS` (default 20,000). Set `LANGFUSE_HOOK_CAPTURE_CONTENT=false` to leave bodies out. See [what is not captured](docs/setup-agent-observability.md#what-is-not-captured) and [deprecation status](docs/setup-agent-observability.md#deprecation-status).
 
-Sub-agent work (Claude Code agents, threads spawned by Codex, Oh My Pi task sessions) is read from its own files and sent as a `Subagent: <type>` span inside the turn that started it, and also as a trace of its own tagged `subagent`. Tokens are counted on the turn only, so totals do not double. See [sub-agents](docs/setup-agent-observability.md#sub-agents).
+Sub-agent work (Claude Code agents, Codex threads, Oh My Pi task sessions, Copilot CLI and Antigravity sub-agents) is read from its own files and sent as a `Subagent: <type>` span inside the turn that started it, and also as a trace of its own tagged `subagent`. Tokens are counted on the turn only, so totals do not double. See [sub-agents](docs/setup-agent-observability.md#sub-agents).
 
 The standalone Python integrations under `tools/` use the Langfuse Python SDK, which sends over OTLP. They run on SDK 4.7 or later and on the current SDK 5.
 
@@ -96,7 +96,7 @@ Press Enter at the trace name prompt to use your home folder name, or pass `--na
 In a test directory, create `probe.txt` with a unique marker and ask the agent to read it and return its contents. In Langfuse, find the new trace and check the model call, tool execution, and following model call. Inspect the tool arguments and result plus the input/output token fields. Availability depends on the adapter and capture settings.
 
 ```sh
-node ts/src/cli.ts selftest all                      # synthetic turn with a sub-agent in Claude, Codex and OMP formats: send, read back, compare, delete
+node ts/src/cli.ts selftest all                      # synthetic turn with a sub-agent in each agent's format: send, read back, compare, delete
 node ts/src/cli.ts doctor claude                     # settings, destinations, last 24h of delivery results
 node ts/src/cli.ts delivery claude                   # turns that are failed, partial or unconfirmed
 node ts/src/cli.ts verify claude <traceId>           # read the trace back from Langfuse

@@ -70,7 +70,7 @@ Langfuse Cloud는 2026-11-16부터 `/api/public/ingestion`으로 들어온 트�
 
 턴은 끝난 뒤에 한 번 보내고, Langfuse가 받은 턴은 다시 보내지 않습니다. Langfuse v4는 같은 스팬 ID를 중복 제거하지 않기 때문입니다. Stop 이벤트 없이 끝난 턴은 트랜스크립트가 1시간 동안 변하지 않으면 종료 처리해 전송합니다. 프롬프트와 도구 본문, 턴 이벤트, 어댑터 메타데이터는 마스킹 후 문자열 길이 제한(`LANGFUSE_HOOK_MAX_CHARS`, 기본 20,000자)을 적용해 전송합니다. 본문을 빼려면 `LANGFUSE_HOOK_CAPTURE_CONTENT=false`를 설정하세요. [수집되지 않는 것](docs/setup-agent-observability.md#what-is-not-captured)과 [사용 중단 현황](docs/setup-agent-observability.md#deprecation-status)도 확인하세요.
 
-서브에이전트(Claude Code 에이전트, Codex가 띄운 스레드, Oh My Pi 태스크 세션)의 모델·도구 호출은 부모 턴의 트레이스 안에 `Subagent: <유형>` 스팬으로 들어가고, `subagent` 태그가 붙은 별도 트레이스로도 볼 수 있습니다. 토큰은 부모 턴 쪽에만 집계되므로 합계가 두 배가 되지 않습니다. 자세한 내용은 [서브에이전트](docs/setup-agent-observability.md#sub-agents)를 참고하세요.
+서브에이전트(Claude Code 에이전트, Codex 스레드, Oh My Pi 태스크 세션, Copilot CLI·Antigravity 서브에이전트)의 모델·도구 호출은 부모 턴의 트레이스 안에 `Subagent: <유형>` 스팬으로 들어가고, `subagent` 태그가 붙은 별도 트레이스로도 볼 수 있습니다. 토큰은 부모 턴 쪽에만 집계되므로 합계가 두 배가 되지 않습니다. 자세한 내용은 [서브에이전트](docs/setup-agent-observability.md#sub-agents)를 참고하세요.
 
 `tools/` 아래의 Python 단독 통합은 OTLP로 보내는 Langfuse Python SDK를 사용합니다. SDK 4.7 이상과 현행 SDK 5에서 동작합니다.
 
@@ -93,7 +93,7 @@ sh scripts/setup.sh --agents claude,codex
 테스트 폴더의 `probe.txt`에 고유한 문구를 적고, 에이전트에게 파일을 읽어 그대로 답하도록 요청하세요. Langfuse의 새 트레이스에서 `모델 → 도구 → 모델` 순서, 도구 인수·결과, 모델별 입력·출력 토큰을 확인합니다. 표시되는 항목은 어댑터와 본문 수집 설정에 따라 달라집니다.
 
 ```sh
-node ts/src/cli.ts selftest all                      # Claude·Codex·OMP 형식의 합성 턴(서브에이전트 포함)을 보내고, 조회해 대조한 뒤 삭제
+node ts/src/cli.ts selftest all                      # 에이전트별 형식의 합성 턴(서브에이전트 포함)을 보내고, 조회해 대조한 뒤 삭제
 node ts/src/cli.ts doctor claude                     # 설정, 목적지, 최근 24시간 전송 결과
 node ts/src/cli.ts delivery claude                   # 실패·부분 전송·미확인 턴
 node ts/src/cli.ts verify claude <traceId>           # Langfuse에서 트레이스를 다시 조회

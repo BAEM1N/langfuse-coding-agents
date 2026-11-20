@@ -226,9 +226,17 @@ of their own, placed in the session that started them and tagged `subagent`,
 with `parentSessionId` in the metadata, and the parent's `task` tool call
 carries `subagentSessionId`. Their tokens are counted there and nowhere else.
 
-Copilot CLI and Antigravity left no separate sub-agent records in the sessions
-examined here (Copilot CLI 1.0.114, Antigravity 1.5.13), so nothing is read for
-them. Goose sends its own spans.
+Two more agents keep sub-agent work where the hook can reach it:
+
+| Agent | Source | Linked by |
+|---|---|---|
+| Copilot CLI | the same `events.jsonl`: a sub-agent's events carry an `agentId` on the envelope | `toolCallId` in `subagent.started`: the `task` call that started it. A failed sub-agent is kept with a `Subagent failed` event |
+| Antigravity | `brain/<conversation>/.system_generated/logs/transcript.jsonl` of the conversation `invoke_subagent` started | the conversation ID in that tool call's result |
+
+No hooks fire inside an Antigravity sub-agent, so its steps come from the
+transcript alone. A tool result is paired with its call only when the model
+asked for a single tool; otherwise the tool is recorded without an output.
+Goose sends its own spans.
 
 Each run appears twice, and its tokens are counted once.
 
@@ -305,7 +313,8 @@ attributes `coding_agent.input` and `coding_agent.output`.
 
 `node ts/src/cli.ts selftest all` checks the whole path against your own
 project, once in each transcript format the shared runtime reads sub-agents
-from (`claude`, `codex`, `omp`; name one to run only that). It writes a made-up turn (a prompt, a sub-agent run, a notification)
+from (`claude`, `codex`, `omp`, `copilot`, `opencode`, `antigravity`; name one
+to run only that). It writes a made-up turn (a prompt, a sub-agent run, a notification)
 to a throwaway directory, sends it the way the hooks do, reads both traces back
 and compares them: observation types and nesting, token totals, cache tokens,
 the event, tool call IDs, adapter metadata, session and tags, and that the
@@ -313,6 +322,24 @@ sub-agent trace carries no usage of its own. Then it deletes the two traces.
 `--keep` leaves them, in environment `hook-selftest`, so you can open them.
 Nothing from a real session is sent, and the agent's read positions and
 delivery records are not touched. The exit code is 1 if any check fails.
+
+## Check a new machine or operating system
+
+The shared runtime has no dependencies and runs TypeScript directly, so the
+same three commands are the check on Windows, macOS and Linux. Node.js 22.18 or
+later is the only requirement for the first.
+
+```sh
+cd ts
+npm test                        # loopback receivers and synthetic transcripts only; no network
+node src/cli.ts selftest all    # needs the project keys; sends synthetic turns, compares, deletes
+node src/cli.ts doctor claude   # after installing hooks: destinations and recent delivery results
+```
+
+`npm run typecheck` needs `npm ci` first. To include the Collector routes in
+`npm test`, set `CODING_AGENT_TEST_OTELCOL` to an `otelcol` binary (core
+distribution 0.164 or later). The suite has been run on Windows; run it on
+macOS and Linux before relying on those.
 
 ## Agent setup checklist
 

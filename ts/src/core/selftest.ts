@@ -17,7 +17,7 @@ import { runHook } from './run.ts';
 // agent's own state is not touched.
 
 const ENVIRONMENT = 'hook-selftest';
-export type SelfTestFormat = 'claude' | 'codex' | 'omp' | 'copilot' | 'opencode';
+export type SelfTestFormat = 'claude' | 'codex' | 'omp' | 'copilot' | 'opencode' | 'antigravity';
 
 interface StoredObservation {
   id: string;
@@ -47,9 +47,14 @@ interface Scenario {
    * session instead of nesting them. Gives the two trace IDs to compare.
    */
   separate?: { turn: string; subagent: string };
+  /** Hook timestamps are taken when the hook runs, so timeline warnings may be added: compare without them. */
+  ignoreEvents?: boolean;
   /** Checks only this format can make. */
   extra?(turn: StoredTrace, check: (name: string, ok: boolean, detail?: string) => void): void;
 }
+
+/** The recorded total, or the sum of the parts when an agent records none. */
+const tokensOf = (usage?: Record<string, number>) => usage ? usage.total ?? Object.values(usage).reduce((sum, value) => sum + value, 0) : 0;
 
 const lines = (rows: object[]) => rows.map(row => JSON.stringify(row)).join('\n') + '\n';
 
@@ -296,6 +301,48 @@ function opencodeScenario(dir: string, session: string): Scenario {
     } };
 }
 
+function antigravityScenario(dir: string, session: string): Scenario {
+  const start = Date.now() - 20_000;
+  const at = (ms: number) => new Date(start + ms).toISOString();
+  const child = '0a0b0c0d-1111-4222-8333-' + String(Date.now()).padStart(12, '0').slice(-12);
+  const logs = (conversation: string) => join(dir, 'home', 'brain', conversation, '.system_generated', 'logs');
+  mkdirSync(logs(session), { recursive: true });
+  mkdirSync(logs(child), { recursive: true });
+  const transcript = join(logs(session), 'transcript.jsonl');
+  writeFileSync(transcript, lines([
+    { type: 'USER_INPUT', step_index: 0, created_at: at(0), content: 'Self-test prompt (synthetic)' },
+    { type: 'PLANNER_RESPONSE', step_index: 1, created_at: at(1000), model: 'antigravity-selftest', input_tokens: 100, cache_read_tokens: 40, output_tokens: 10,
+      content: '', tool_calls: [{ name: 'invoke_subagent', args: { TypeName: '"selftest"', Role: 'synthetic', Prompt: 'Synthetic sub-agent prompt' } }] },
+    { type: 'GENERIC', step_index: 2, created_at: at(6000), content: 'Subagent finished. Conversation ID: ' + child },
+    { type: 'PLANNER_RESPONSE', step_index: 3, created_at: at(7000), model: 'antigravity-selftest', input_tokens: 120, cache_read_tokens: 60, output_tokens: 12,
+      content: 'Self-test complete (synthetic)' },
+  ]));
+  writeFileSync(join(logs(child), 'transcript.jsonl'), lines([
+    { type: 'USER_INPUT', step_index: 0, created_at: at(1500), content: 'Synthetic sub-agent prompt' },
+    { type: 'PLANNER_RESPONSE', step_index: 1, created_at: at(2000), model: 'antigravity-selftest', input_tokens: 100, cache_read_tokens: 40, output_tokens: 10,
+      content: '', tool_calls: [{ name: 'read_file', args: { path: 'synthetic.txt' } }] },
+    { type: 'GENERIC', step_index: 2, created_at: at(3000), content: 'synthetic' },
+    { type: 'PLANNER_RESPONSE', step_index: 3, created_at: at(4000), model: 'antigravity-selftest', input_tokens: 150, cache_read_tokens: 80, output_tokens: 15,
+      content: 'Synthetic sub-agent answer' },
+  ]));
+  return { tag: 'antigravity', turnKey: '0', runKey: child, ownerTool: 'invoke_subagent', subagent: 'selftest',
+    turnTypes: 'AGENT,AGENT,GENERATION,GENERATION,GENERATION,GENERATION,TOOL,TOOL', innerTypes: 'GENERATION,GENERATION,TOOL',
+    mainTokens: 150 + 192, agentTokens: 150 + 245, ignoreEvents: true,
+    environment: { LANGFUSE_HOOK_ANTIGRAVITY_HOME: join(dir, 'home'), LANGFUSE_ANTIGRAVITY_STATE_DIR: join(dir, 'home', 'state', 'langfuse') },
+    async send() {
+      // The five hook phases Antigravity runs around a turn that calls one tool.
+      const { runAntigravityHook } = await import('./antigravity-hook.ts');
+      const conversation = { conversationId: session };
+      const tool = { ...conversation, stepIdx: 2, toolCall: { name: 'invoke_subagent', args: { TypeName: '"selftest"' } } };
+      await runAntigravityHook('PreInvocation', { ...conversation, initialNumSteps: 1, invocationNum: 0 });
+      await runAntigravityHook('PreToolUse', tool);
+      await runAntigravityHook('PostToolUse', tool);
+      await runAntigravityHook('PostInvocation', { ...conversation, initialNumSteps: 1, invocationNum: 0 });
+      await runAntigravityHook('Stop', { ...conversation, transcriptPath: transcript, fullyIdle: true, terminationReason: 'completed' });
+      return undefined;
+    } };
+}
+
 async function readBack(client: LangfuseClient, api: 'v2' | 'legacy', traceId: string): Promise<StoredTrace | undefined> {
   if (api === 'legacy') {
     try {
@@ -329,7 +376,8 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
   const session = `hook-selftest-${format}-${Date.now()}`;
   const dir = mkdtempSync(join(tmpdir(), 'langfuse-hooks-selftest-'));
   const scenario = format === 'codex' ? codexScenario(dir, session) : format === 'omp' ? ompScenario(dir, session)
-    : format === 'copilot' ? copilotScenario(dir, session) : format === 'opencode' ? opencodeScenario(dir, session) : claudeScenario(dir, session);
+    : format === 'copilot' ? copilotScenario(dir, session) : format === 'opencode' ? opencodeScenario(dir, session)
+    : format === 'antigravity' ? antigravityScenario(dir, session) : claudeScenario(dir, session);
 
   // The integration reads its settings from the environment. Point it at a
   // throwaway home so the real read positions and delivery records stay as they are.
@@ -386,7 +434,8 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
     } else if (turn) {
       const observations = turn.observations;
       const byId = new Map(observations.map(observation => [observation.id, observation]));
-      const types = (list: StoredObservation[]) => list.map(observation => observation.type).sort().join(',');
+      const types = (list: StoredObservation[]) => list.map(observation => observation.type)
+        .filter(kind => !(scenario.ignoreEvents && kind === 'EVENT')).sort().join(',');
       check('turn: root agent, sub-agent, and every model call, tool and event', types(observations) === scenario.turnTypes, types(observations));
       check('no observation stored twice', new Set(observations.map(observation => observation.id)).size === observations.length);
       const agent = observations.find(observation => observation.name === 'Subagent: ' + scenario.subagent);
@@ -396,7 +445,7 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
       const inner = observations.filter(observation => agent && observation.parentObservationId === agent.id);
       check('sub-agent model calls and tools sit under the sub-agent', types(inner) === scenario.innerTypes, types(inner));
       const tokens = observations.filter(observation => observation.type === 'GENERATION')
-        .reduce((sum, observation) => sum + (observation.usageDetails?.total ?? 0), 0);
+        .reduce((sum, observation) => sum + tokensOf(observation.usageDetails), 0);
       check(`turn tokens are main ${scenario.mainTokens} + sub-agent ${scenario.agentTokens}`, tokens === scenario.mainTokens + scenario.agentTokens, 'stored ' + tokens);
       const tool = inner.find(observation => observation.type === 'TOOL') ?? call;
       check('tool call ID and neighbouring model calls kept as metadata', typeof tool?.metadata?.toolCallId === 'string'

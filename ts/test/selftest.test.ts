@@ -59,7 +59,7 @@ async function fakeLangfuse(t: TestContext, mode: 'v2' | 'legacy', corrupt?: (ob
   return { config: loadConfig('claude', env), traces, deleted };
 }
 
-for (const [mode, format] of [['v2', 'claude'], ['legacy', 'claude'], ['legacy', 'codex'], ['v2', 'codex'], ['legacy', 'omp'], ['legacy', 'copilot'], ['v2', 'copilot'], ['legacy', 'opencode'], ['v2', 'opencode']] as const) {
+for (const [mode, format] of [['v2', 'claude'], ['legacy', 'claude'], ['legacy', 'codex'], ['v2', 'codex'], ['legacy', 'omp'], ['legacy', 'copilot'], ['v2', 'copilot'], ['legacy', 'opencode'], ['v2', 'opencode'], ['legacy', 'antigravity'], ['v2', 'antigravity']] as const) {
   test(`selftest (${format} format) passes against a server that offers the ${mode} read API, and cleans up`, async (t) => {
     const before = { home: process.env.CLAUDE_CONFIG_DIR, copilot: process.env.COPILOT_HOME, transport: process.env.LANGFUSE_HOOK_TRANSPORT };
     const { config, traces, deleted } = await fakeLangfuse(t, mode);

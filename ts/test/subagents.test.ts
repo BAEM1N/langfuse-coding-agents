@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { runHook } from '../src/core/run.ts';
+import type { GenerationStep, ToolStep } from '../src/core/types.ts';
 
 const fixture = (name: string) => readFileSync(new URL('./fixtures/' + name, import.meta.url), 'utf8').split(/\r?\n/).filter(Boolean);
 const CLEAR = /^(CC_)?LANGFUSE|^OTEL_|^CODING_AGENT|^CLAUDE_CONFIG_DIR$|^CODEX_HOME$/;
@@ -230,5 +231,105 @@ test('Oh My Pi task session: attached under the task call that named it', async 
     assert.equal(events.filter(event => event.type === 'trace-create').length, 2, 'the turn and the task session on its own');
   } finally {
     rmSync(home, { force: true, recursive: true });
+  }
+});
+
+test('Copilot CLI sub-agent: events carrying an agentId are a run under the task call, not part of the main turn', async () => {
+  const { parseCopilotTurn } = await import('../src/adapters/copilot.ts');
+  let n = 0;
+  const row = (seconds: number, type: string, data: object, agentId?: string) => ({ offset: n, value: { id: 'e' + n++, type, data,
+    timestamp: new Date(Date.UTC(2026, 10, 20, 12, 0, seconds)).toISOString(), ...(agentId ? { agentId } : {}) } });
+  const usage = (apiCallId: string, inputTokens: number, outputTokens: number) => ({ usage: { apiCallId, inputTokens, outputTokens } });
+  const entries = [
+    row(0, 'user.message', { messageId: 'um', content: 'main prompt', interactionId: 'i1' }),
+    row(1, 'assistant.turn_start', { turnId: '0', interactionId: 'i1' }),
+    row(2, 'session.usage_record', usage('c1', 100, 10)),
+    row(2, 'assistant.message', { messageId: 'm1', turnId: '0', apiCallId: 'c1', model: 'm', toolRequests: [{ toolCallId: 'call_task', name: 'task' }] }),
+    row(3, 'tool.execution_start', { toolCallId: 'call_task', toolName: 'task' }),
+    row(4, 'subagent.started', { toolCallId: 'call_task', agentName: 'general-purpose', model: 'm' }, 'agent-1'),
+    // The sub-agent's own prompt is a user.message too: it must not be taken for the user's.
+    row(4, 'user.message', { messageId: 'sum', content: 'SUB-AGENT PROMPT' }, 'agent-1'),
+    row(5, 'assistant.turn_start', { turnId: '0', parentToolCallId: 'call_task' }, 'agent-1'),
+    row(6, 'session.usage_record', usage('s1', 50, 5), 'agent-1'),
+    row(6, 'assistant.message', { messageId: 'sm1', turnId: '0', apiCallId: 's1', model: 'm', toolRequests: [{ toolCallId: 'call_view', name: 'view' }] }, 'agent-1'),
+    row(7, 'tool.execution_start', { toolCallId: 'call_view', toolName: 'view' }, 'agent-1'),
+    row(8, 'tool.execution_complete', { toolCallId: 'call_view', success: true, result: { content: 'x' } }, 'agent-1'),
+    row(9, 'assistant.turn_start', { turnId: '1', parentToolCallId: 'call_task' }, 'agent-1'),
+    row(10, 'session.usage_record', usage('s2', 60, 6), 'agent-1'),
+    row(10, 'assistant.message', { messageId: 'sm2', turnId: '1', apiCallId: 's2', model: 'm', content: 'sub answer' }, 'agent-1'),
+    row(11, 'subagent.completed', { toolCallId: 'call_task', agentName: 'general-purpose', totalTokens: 121 }, 'agent-1'),
+    row(12, 'tool.execution_complete', { toolCallId: 'call_task', success: true, result: { content: 'sub answer' } }),
+    row(13, 'assistant.turn_start', { turnId: '1', interactionId: 'i1' }),
+    row(14, 'session.usage_record', usage('c2', 120, 12)),
+    row(14, 'assistant.message', { messageId: 'm2', turnId: '1', apiCallId: 'c2', model: 'm', content: 'main answer' }),
+  ];
+  const turn = parseCopilotTurn(entries, 'session', new Date(Date.UTC(2026, 10, 20, 12, 0, 15)).toISOString())!;
+  assert.equal(turn.key, 'um');
+  assert.equal(turn.input, 'main prompt', 'the user prompt, not the sub-agent prompt');
+  assert.equal(turn.output, 'main answer');
+  const total = (steps: typeof turn.steps) => steps.reduce((sum, step) => sum + (step.kind === 'generation' ? step.usage?.total ?? 0 : 0), 0);
+  assert.deepEqual(turn.steps.map(step => step.kind + ':' + step.name), ['generation:m', 'tool:task', 'generation:m'], 'only the main agent\'s steps');
+  assert.equal(total(turn.steps), 110 + 132);
+  const [run] = turn.children ?? [];
+  assert.equal(run.name, 'general-purpose');
+  assert.equal(run.parentToolKey, 'call_task');
+  assert.equal(run.complete, true);
+  assert.equal(run.input, 'SUB-AGENT PROMPT');
+  assert.deepEqual(run.steps.map(step => step.kind + ':' + step.name), ['generation:m', 'tool:view', 'generation:m']);
+  assert.equal(total(run.steps), 121, 'matches the total Copilot reports for the sub-agent');
+  assert.equal(run.metadata.reportedTotalTokens, 121);
+
+  // A sub-agent that failed before any model call is still recorded, with the failure as an event.
+  const failed = [...entries.slice(0, 6), row(5, 'subagent.failed', { toolCallId: 'call_task', agentName: 'general-purpose', error: 'model not supported' }, 'agent-1'),
+    ...entries.slice(16)];
+  const [failure] = parseCopilotTurn(failed, 'session', new Date(Date.UTC(2026, 10, 20, 12, 0, 15)).toISOString())!.children ?? [];
+  assert.deepEqual(failure.events.map(event => [event.name, event.level]), [['Subagent failed', 'ERROR']]);
+  assert.equal(failure.steps.length, 0);
+});
+
+test('Antigravity invoke_subagent: the conversation named by the tool result becomes a run under that tool call', async () => {
+  const { antigravitySubagentTranscript, readAntigravitySubagent } = await import('../src/adapters/antigravity.ts');
+  const brain = mkdtempSync(join(tmpdir(), 'lah-agy-'));
+  try {
+    const parentId = '11111111-1111-4111-8111-111111111111';
+    const childId = '22222222-2222-4222-8222-222222222222';
+    const logs = (id: string) => join(brain, id, '.system_generated', 'logs');
+    mkdirSync(logs(parentId), { recursive: true });
+    mkdirSync(logs(childId), { recursive: true });
+    const parent = join(logs(parentId), 'transcript.jsonl');
+    writeFileSync(parent, '');
+    const at = (seconds: number) => new Date(Date.UTC(2026, 10, 20, 12, 0, seconds)).toISOString();
+    writeFileSync(join(logs(childId), 'transcript.jsonl'), [
+      { type: 'SYSTEM_MESSAGE', step_index: 0, created_at: at(0), content: 'system' },
+      { type: 'PLANNER_RESPONSE', step_index: 1, created_at: at(1), model: 'm', input_tokens: 100, cache_read_tokens: 40, output_tokens: 10,
+        tool_calls: [{ name: 'read_file', args: { path: 'a' } }] },
+      { type: 'GENERIC', step_index: 2, created_at: at(2), content: 'file contents' },
+      { type: 'PLANNER_RESPONSE', step_index: 3, created_at: at(3), model: 'm', input_tokens: 120, cache_read_tokens: 60, output_tokens: 12,
+        tool_calls: [{ name: 'read_file', args: { path: 'b' } }, { name: 'read_file', args: { path: 'c' } }] },
+      { type: 'GENERIC', step_index: 4, created_at: at(4), content: 'first' },
+      { type: 'GENERIC', step_index: 5, created_at: at(5), content: 'second' },
+      { type: 'PLANNER_RESPONSE', step_index: 6, created_at: at(6), model: 'm', input_tokens: 150, cache_read_tokens: 80, output_tokens: 15, content: 'sub answer' },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n');
+
+    const found = antigravitySubagentTranscript(parent, `Subagent started. Conversation ID: ${childId}`);
+    assert.equal(found?.id, childId);
+    assert.equal(antigravitySubagentTranscript(parent, 'no conversation here'), undefined);
+    assert.equal(antigravitySubagentTranscript(parent, `missing ${'33333333-3333-4333-8333-333333333333'}`), undefined, 'a conversation with no transcript is not attached');
+
+    const run = readAntigravitySubagent(found!.path, found!.id, '"research"', '7')!;
+    assert.equal(run.name, 'research', 'the JSON-encoded type name is unwrapped');
+    assert.equal(readAntigravitySubagent(found!.path, found!.id, 'a long free-form role description that is not a label', '7')!.name, 'subagent');
+    assert.equal(run.parentToolKey, '7');
+    const calls = run.steps.filter((step): step is GenerationStep => step.kind === 'generation');
+    assert.equal(calls.length, 3);
+    assert.equal(calls.reduce((sum, call) => sum + call.usage!.input + call.usage!.input_cached_tokens + call.usage!.output, 0), 370 + 180 + 37);
+    const tools = run.steps.filter((step): step is ToolStep => step.kind === 'tool');
+    assert.equal(tools.length, 3);
+    assert.equal(tools[0].output, 'file contents', 'a single requested tool is paired with the next step');
+    assert.deepEqual(tools.slice(1).map(tool => tool.output), [undefined, undefined], 'two tools in one call are not paired by position');
+    assert.ok(tools.every(tool => tool.endTime && tool.endTime >= tool.startTime));
+    assert.equal(run.output, 'sub answer');
+  } finally {
+    rmSync(brain, { force: true, recursive: true });
   }
 });

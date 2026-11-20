@@ -53,7 +53,8 @@ export interface Config {
 
 export function agentHome(agent: TraceAgentName): string {
   if (agent === 'claude') return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
-  if (agent === 'antigravity') return join(homedir(), '.gemini', 'antigravity-cli');
+  // The override exists for the self-test, which must not write into the real agent home.
+  if (agent === 'antigravity') return process.env.LANGFUSE_HOOK_ANTIGRAVITY_HOME || join(homedir(), '.gemini', 'antigravity-cli');
   if (agent === 'omp') return process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp', 'agent');
   if (agent === 'copilot') return process.env.COPILOT_HOME || join(homedir(), '.copilot');
   if (agent === 'opencode') return join(homedir(), '.config', 'opencode');

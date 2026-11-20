@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { antigravitySubagentTranscript, readAntigravitySubagent } from '../adapters/antigravity.ts';
 import { stableId } from './ids.ts';
 import { loadConfig } from './config.ts';
 import { batchOptions } from './run.ts';
@@ -134,6 +135,23 @@ export async function runAntigravityHook(phase: AntigravityPhase, payload: Recor
       usage: { input: g.input_tokens ?? 0, input_cached_tokens: g.cache_read_tokens ?? 0, output: g.output_tokens ?? 0 },
       metadata: { stepIndex: g.step_index, timestampSource: timing?.pre ? 'native-hook' : 'transcript',
         postInvocationTime: timing?.post, reportedToolCalls: g.tool_calls?.length ?? 0 } });
+  }
+  // A sub-agent's work is in a conversation of its own, named by the tool result.
+  if (config.subagents) {
+    for (const [index, tool] of toolSteps) {
+      if (tool.name !== 'invoke_subagent') continue;
+      try {
+        const sub = antigravitySubagentTranscript(path, transcript.get(index)?.content ?? tool.output);
+        if (!sub) continue;
+        // The type name the model asked for; the role text is free-form, so it is not used as a name.
+        const asked = generations.flatMap((g) => (Array.isArray(g.tool_calls) ? g.tool_calls : []))
+          .find((call: { name?: unknown; args?: { TypeName?: unknown } }) => call?.name === 'invoke_subagent' && typeof call.args?.TypeName === 'string');
+        const run = readAntigravitySubagent(sub.path, sub.id, asked?.args?.TypeName || 'subagent', tool.key);
+        if (run) (turn.children ??= []).push(run);
+      } catch {
+        log.debug('Antigravity sub-agent transcript could not be read');
+      }
+    }
   }
   turn.steps.push(...toolSteps.values());
   turn.steps.sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
