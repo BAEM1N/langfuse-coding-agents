@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { loadConfig } from './core/config.ts';
-import { auditLangfuse, auditLangfuseV2, readTraceObservations, summarizeTurns } from './core/audit.ts';
+import { auditLangfuse, auditLangfuseV2, readTraceObservations, summarizeTurns, withReadApi } from './core/audit.ts';
 import { otlpSpanId } from './core/otlp.ts';
 import { parseOmpSession } from './adapters/omp.ts';
 import { readCopilotTurn } from './adapters/copilot.ts';
@@ -261,7 +261,8 @@ async function cmdAuditLangfuse(agent: string | undefined, args: string[]): Prom
   const window = { limit, from: timeFlag(args, 'from'), to: timeFlag(args, 'to') };
   const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
     timeoutMs: Math.max(cfg.timeoutMs, 30000), logger: createLogger(logPath(cfg), false) });
-  const report = readApi(cfg, args) === 'v2' ? await auditLangfuseV2(client, window) : await auditLangfuse(client, window);
+  const { value: report } = await withReadApi<object>(readApi(args), (api) =>
+    api === 'v2' ? auditLangfuseV2(client, window) : auditLangfuse(client, window));
   console.log(JSON.stringify(report, null, 2));
 }
 
@@ -278,9 +279,11 @@ function timeFlag(args: string[], name: string): string | undefined {
  * traces (self-hosted v3, or v4 in legacy/dual write mode). The default follows
  * the transport that wrote the data.
  */
-function readApi(cfg: ReturnType<typeof loadConfig>, args: string[]): 'v2' | 'legacy' {
+function readApi(args: string[]): 'v2' | 'legacy' | undefined {
   const raw = flag(args, 'api');
-  if (raw === undefined) return cfg.langfuseTransport === 'otlp' ? 'v2' : 'legacy';
+  // Unset: try v2 and fall back. The write transport does not tell which read
+  // API a server offers: a v4 server in dual write mode takes OTLP but has no v2.
+  if (raw === undefined) return undefined;
   if (raw !== 'v2' && raw !== 'legacy') throw new Error('--api must be v2 or legacy');
   return raw;
 }
@@ -295,11 +298,13 @@ async function cmdVerify(agent: string | undefined, traceId: string | undefined,
     accepted: Object.values(r.spans).filter((hash) => hash !== 'dropped').length, pending: r.pending?.length ?? 0 })) };
   let ok = true;
   if (cfg.publicKey && cfg.secretKey) {
-    const api = readApi(cfg, args);
+    let api: 'v2' | 'legacy' | undefined = readApi(args);
     const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
       timeoutMs: Math.max(cfg.timeoutMs, 30000), logger: createLogger(logPath(cfg), false) });
     try {
-      const stored = await readTraceObservations(client, api, traceId);
+      const read = await withReadApi(api, (chosen) => readTraceObservations(client, chosen, traceId));
+      api = read.api;
+      const stored = read.value;
       const ids = stored.map((span) => span.id);
       const record = records.find((r) => r.destination.startsWith('langfuse-'));
       const expected = record ? Object.entries(record.spans).filter(([, hash]) => hash !== 'dropped')

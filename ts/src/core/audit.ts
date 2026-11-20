@@ -252,10 +252,32 @@ export async function auditLangfuseV2(client: LangfuseClient, window: AuditWindo
     traces: traces.length, tracesInWindow: byTrace.size, agents: groups };
 }
 
+/**
+ * A self-hosted v4 server in `legacy` or `dual` write mode answers the v2
+ * observations API with 404 and still serves stored traces. Try v2, then fall
+ * back, and report which API answered.
+ */
+export async function withReadApi<T>(preferred: 'v2' | 'legacy' | undefined,
+  read: (api: 'v2' | 'legacy') => Promise<T>): Promise<{ api: 'v2' | 'legacy'; value: T }> {
+  if (preferred) return { api: preferred, value: await read(preferred) };
+  try {
+    return { api: 'v2', value: await read('v2') };
+  } catch (error) {
+    if (!/HTTP 404/.test((error as Error).message)) throw error;
+    return { api: 'legacy', value: await read('legacy') };
+  }
+}
+
 /** Read one trace back to check that a delivery actually reached storage. */
 export async function readTraceObservations(client: LangfuseClient, api: 'v2' | 'legacy', traceId: string) {
   if (api === 'legacy') {
-    const trace = await client.read<StoredTrace>('/api/public/traces/' + encodeURIComponent(traceId));
+    let trace: StoredTrace;
+    try {
+      trace = await client.read<StoredTrace>('/api/public/traces/' + encodeURIComponent(traceId));
+    } catch (error) {
+      if (/HTTP 404/.test((error as Error).message)) return []; // no such trace
+      throw error;
+    }
     return (trace.observations ?? []).map((span) => ({ id: span.id, type: span.type }));
   }
   const { observations } = await readObservations(client, { traceId }, 5);

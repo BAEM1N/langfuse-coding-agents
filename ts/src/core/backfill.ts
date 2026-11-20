@@ -1,4 +1,4 @@
-import { readTraceObservations } from './audit.ts';
+import { readTraceObservations, withReadApi } from './audit.ts';
 import { traceIdFor, turnToEvents } from './batch.ts';
 import type { Config } from './config.ts';
 import { contentHash, readRecord, writeRecord } from './delivery.ts';
@@ -67,7 +67,8 @@ async function reconcileRemote(config: Config, destination: Destination, plan: B
     timeoutMs: Math.max(config.timeoutMs, 30000), logger });
   for (const traceId of plan.selected) {
     if (readRecord(stateDir, traceId, destination.id)) continue;
-    const stored = new Set((await readTraceObservations(client, 'v2', traceId)).map(span => span.id));
+    const { value } = await withReadApi(undefined, api => readTraceObservations(client, api, traceId));
+    const stored = new Set(value.map(span => span.id));
     if (!stored.size) continue;
     const observations = plan.events.get(traceId)!.filter(event => event.type !== 'trace-create' && event.type !== 'event-create');
     const present = observations.filter(event => stored.has(otlpSpanId(String(event.body.id))));

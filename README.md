@@ -96,7 +96,7 @@ node ts/src/cli.ts doctor claude                     # settings, destinations, l
 node ts/src/cli.ts delivery claude                   # turns that are failed, partial or unconfirmed
 node ts/src/cli.ts verify claude <traceId>           # read the trace back from Langfuse
 node ts/src/cli.ts verify claude <traceId> --tempo http://127.0.0.1:13200
-node ts/src/cli.ts audit-langfuse claude --limit 10  # --api v2 for Cloud and v4, --api legacy for v3
+node ts/src/cli.ts audit-langfuse claude --limit 10  # read API is detected; force with --api v2|legacy
 ```
 
 `doctor` reporting valid keys, or a hook logging that a request was accepted, does not show that a trace is stored. `verify` does: it reads the trace from the backend and compares it with what was sent. A turn listed as `unconfirmed` (timeout, lost response, or a partial rejection) is not sent again automatically; check it with `verify`, then run `delivery claude clear <traceId>` only if it is missing.

@@ -93,7 +93,7 @@ node ts/src/cli.ts doctor claude                     # 설정, 목적지, 최근
 node ts/src/cli.ts delivery claude                   # 실패·부분 전송·미확인 턴
 node ts/src/cli.ts verify claude <traceId>           # Langfuse에서 트레이스를 다시 조회
 node ts/src/cli.ts verify claude <traceId> --tempo http://127.0.0.1:13200
-node ts/src/cli.ts audit-langfuse claude --limit 10  # Cloud·v4는 --api v2, v3는 --api legacy
+node ts/src/cli.ts audit-langfuse claude --limit 10  # 조회 API는 자동 감지, --api v2|legacy로 강제
 ```
 
 `doctor`의 인증 성공이나 훅 로그의 접수 기록만으로는 트레이스가 저장됐다고 볼 수 없습니다. `verify`가 백엔드에서 트레이스를 읽어 보낸 내용과 비교합니다. `unconfirmed`로 표시된 턴(타임아웃, 응답 유실, 부분 거부)은 자동으로 다시 보내지 않습니다. `verify`로 확인한 뒤 실제로 없을 때만 `delivery claude clear <traceId>`를 실행하세요.
