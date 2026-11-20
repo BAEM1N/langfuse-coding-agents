@@ -120,7 +120,7 @@ stops before delivering them. Add a persistent queue if you need that guarantee;
 this repository has not tested one. Confirm storage with
 `node ts/src/cli.ts verify <agent> <traceId> --tempo http://127.0.0.1:13200`.
 
-Supply an existing OpenTelemetry Collector binary with the `file`, `resource`, and
+Supply an existing OpenTelemetry Collector binary with the `file`, `transform`, and
 `otlp_http` components. `--tempo` accepts the complete Tempo OTLP HTTP URL.
 
 ```powershell
@@ -217,6 +217,11 @@ from where each agent writes it.
 |---|---|---|
 | Claude Code | `<session>/subagents/agent-<id>.jsonl` and `.meta.json` next to the session transcript | `toolUseId` in the meta file: the tool call that started the agent |
 | Codex | the spawned thread's own rollout under `~/.codex/sessions` (Codex runs no hooks for it) | `session_id` in its `session_meta`, and `turn_attribution.parent_turn_id` on each of its turns |
+| Oh My Pi | `<session>/<TaskName>.jsonl`, the session each `task` runs in | the task name in the `task` tool call's arguments |
+
+Copilot CLI, Antigravity and OpenCode left no separate sub-agent records in the
+sessions examined here (Copilot CLI 1.0.114, Antigravity 1.5.13, OpenCode 1.19.6),
+so nothing is read for them. Goose sends its own spans.
 
 Each run appears twice, and its tokens are counted once.
 
@@ -237,6 +242,25 @@ itself: backfill the parent rollout, which brings its threads with it.
 
 `CODING_AGENT_SUBAGENT_TRACES=false` keeps only the spans inside the turn.
 `CODING_AGENT_SUBAGENTS=false` turns sub-agent reading off.
+
+## Deprecation status
+
+Checked against vendor documentation on 2026-11-21. The middle column is what
+this repository uses by default.
+
+| Area | Used here | Deprecated alternative, and where it remains |
+|---|---|---|
+| Langfuse trace writes | OTLP/HTTP `POST /api/public/otel/v1/traces` with `x-langfuse-ingestion-version: 4` | `POST /api/public/ingestion` for traces and observations: Cloud stopped storing it on 2026-11-16, self-hosted v4 rejects it outside the `legacy` and `dual` write modes, which are themselves due for removal. Used only when the server has no OTLP endpoint, or with `LANGFUSE_HOOK_TRANSPORT=legacy` |
+| Langfuse reads | `GET /api/public/v2/observations` | `GET /api/public/traces`, `/traces/{id}`, `/observations`: retired on Cloud on 2026-11-16, 404 on self-hosted v4 in its default mode. Read only when v2 answers 404 (a server in a transitional write mode) |
+| Langfuse data model | Session, user, tags and metadata on every span; input and output on the root observation | Trace-level input and output (`langfuse.trace.input`, `langfuse.trace.output`): not sent |
+| Langfuse Python SDK (`tools/`) | 4.7 or later, verified on 5.2.0: `start_as_current_observation`, `propagate_attributes` | `update_current_trace`, `start_as_current_span`: reached only through the shim for SDK 3.x |
+| GenAI span attributes | `gen_ai.provider.name`, `gen_ai.usage.cache_write.input_tokens`, `gen_ai.usage.reasoning.output_tokens`, input totals that include cached tokens | `gen_ai.system`, `gen_ai.usage.prompt_tokens`, `gen_ai.usage.completion_tokens`, `gen_ai.usage.cache_creation.input_tokens`: not sent. The conventions are still in development status and can change |
+| Collector | `transform` processor, `otlp_http` exporter | `resource` processor: superseded by `transform` and leaving the core distribution. Not used |
+| Agents | Claude Code, Codex, Oh My Pi, Antigravity, Copilot CLI, OpenCode, Deep Agents, Goose | Gemini CLI for personal accounts: replaced by Antigravity. `tools/gemini-cli` is kept for deployments that still run it |
+
+Two things remain on a deprecated path by design, both as fallbacks: legacy
+ingestion for servers before v3.22, and the stored-trace read API for servers
+that do not offer v2. `doctor` says so when either is in use.
 
 ## What is not captured
 

@@ -162,7 +162,7 @@ for (const agent of new Set(agents)) {
       execFileSync(venvSource, ['-m', 'venv', venvDirectory], { stdio: 'inherit' });
     }
     if (!usablePython(venvPython, 'import langfuse')) {
-      execFileSync(venvPython, ['-m', 'pip', 'install', 'langfuse>=4,<5'], { stdio: 'inherit' });
+      execFileSync(venvPython, ['-m', 'pip', 'install', 'langfuse>=4.7'], { stdio: 'inherit' });
     }
     for (const [sub, file] of [['plugins', 'langfuse_plugin.js'], ['hooks', 'langfuse_hook.py']]) {
       mkdirSync(join(opencodeHome, sub), { recursive: true });

@@ -24,10 +24,9 @@ TRACE_TO_LANGFUSE=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
-LANGFUSE_HOOK_TRANSPORT=otlp
 ```
 
-`LANGFUSE_HOOK_TRANSPORT=otlp` は Langfuse Cloud とセルフホスト v4 向けで、`/api/public/otel/v1/traces` に送信します。Langfuse Cloud は 2026-11-16 以降、`/api/public/ingestion` に届いたトレースイベントを保存しません。未設定または `legacy` は従来の `/api/public/ingestion` を使い、セルフホスト v3 と、書き込みモードが `legacy`・`dual` の v4 向けです。既存の設定が自動で切り替わることはありません。切り替えはこの行を追加するか、セットアップに `--langfuse-transport otlp` を付けます。戻すときは `legacy` にするか、セットアップが残す `.env.bak-<時刻>` を復元します。保存の確認には `node ts/src/cli.ts verify claude <traceId>` を使います。詳細は [README.md](README.md#quick-start) を参照してください。
+共通 Node ランタイムは、Langfuse がサポートする OTLP（`/api/public/otel/v1/traces`）で送信します。Langfuse Cloud は 2026-11-16 以降、`/api/public/ingestion` に届いたトレースイベントを保存せず、セルフホスト v4 も移行用の書き込みモード以外では拒否します。サーバーに OTLP エンドポイントがない場合（v3.22 より前のセルフホスト）に限り、従来の `/api/public/ingestion` に切り替わります。`LANGFUSE_HOOK_TRANSPORT=legacy` で従来の経路に固定できますが、Langfuse では非推奨です。サブエージェント（Claude Code のエージェント、Codex のスレッド、Oh My Pi のタスクセッション）は親ターンのトレース内のスパンと、`subagent` タグ付きの個別トレースの両方に記録され、トークンは親ターン側だけで集計されます。保存の確認には `node ts/src/cli.ts verify claude <traceId>`、ローカルとの突き合わせには `node ts/src/cli.ts coverage claude` を使います。詳細は [README.md](README.md#quick-start) を参照してください。
 
 ### エージェントのフックをインストール
 
@@ -51,7 +50,7 @@ sh scripts/setup.sh --agents claude,codex
 
 ### Grafana Tempo への送信を追加
 
-Grafana、Tempo、OpenTelemetry Collector の実行ファイルを用意します。Collector には `file`、`resource`、`otlp_http` コンポーネントが必要です。共通フックは Langfuse に直接送信し、Collector は OTLP のコピーを Tempo に送ります。Goose の場合は Collector が両方に送信します。
+Grafana、Tempo、OpenTelemetry Collector の実行ファイルを用意します。Collector には `file`、`transform`、`otlp_http` コンポーネントが必要です（core ディストリビューション 0.164 以降、または contrib）。共通フックは Langfuse に直接送信し、Collector は OTLP のコピーを Tempo に送ります。Goose の場合は Collector が両方に送信します。
 
 **Windows**
 

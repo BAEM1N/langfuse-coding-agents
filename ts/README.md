@@ -10,7 +10,7 @@ This is an alternative to the Python hooks under `tools/`. It reads the same cre
 |---|---|---|
 | Runtime | Python 3.8+ + `langfuse` SDK 4.x | Node.js ≥ 22.18 only (runs `.ts` natively) |
 | Dependencies | pip / venv | none |
-| Transport | Langfuse Python SDK (OTel) | `LANGFUSE_HOOK_TRANSPORT=otlp`: OTLP/HTTP to `/api/public/otel/v1/traces` (Langfuse Cloud, self-hosted v4). `legacy` or unset: `/api/public/ingestion` (self-hosted v3) |
+| Transport | Langfuse Python SDK (OTel) | OTLP/HTTP to `/api/public/otel/v1/traces`. The deprecated `/api/public/ingestion` is used only for a server with no OTLP endpoint, or with `LANGFUSE_HOOK_TRANSPORT=legacy` |
 | Duplicates on re-send | offset bookkeeping | deterministic ids plus a per-destination delivery record. Legacy ingestion upserts a re-sent turn; over OTLP a confirmed turn is not sent again, because Langfuse v4 keeps both copies |
 | Secret redaction | — | built in (Langfuse/OpenAI/Anthropic/GitHub/GitLab/AWS/Slack keys, JWTs, private keys, WireGuard keys, `*_SECRET=` style values) |
 | Tool events | `PreToolUse` / `PostToolUse` buffer | reconstructed from the transcript — no per-tool hooks needed |
@@ -75,7 +75,7 @@ Optional:
 | `LANGFUSE_HOOK_DEBUG` | `false` | verbose log (`CC_LANGFUSE_DEBUG` also works) |
 | `LANGFUSE_TRACING_ENVIRONMENT` | — | Langfuse environment |
 | `LANGFUSE_HOOK_TIMEOUT_MS` | `15000` | HTTP timeout |
-| `LANGFUSE_HOOK_TRANSPORT` | `legacy` | `otlp` for Langfuse Cloud and self-hosted v4. Never changed for you |
+| `LANGFUSE_HOOK_TRANSPORT` | `auto` | `auto`: OTLP, with legacy ingestion only if the server has no OTLP endpoint. `otlp`: OTLP only. `legacy`: the deprecated ingestion API only |
 | `LANGFUSE_HOOK_CAPTURE_CONTENT` | — | `false` leaves prompt and tool bodies out of the direct OTLP route |
 | `CODING_AGENT_SUBAGENTS` | `true` | `false` stops reading Claude Code sub-agent transcripts and Codex spawned-thread rollouts |
 | `CODING_AGENT_SUBAGENT_TRACES` | `true` | `false` keeps sub-agent runs only as spans inside the turn, without a trace of their own |

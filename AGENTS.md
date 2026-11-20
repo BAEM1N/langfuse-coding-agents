@@ -54,7 +54,7 @@ One-liners to *show* the user (the user runs these, not you):
 
 After the user installs, re-run the `python3 --version` check yourself to confirm it landed before continuing.
 
-The installer pins `langfuse>=4.0` (currently 4.6.x). Older Langfuse 3.x SDKs also work; both code paths are exercised by the same hooks via a compatibility shim — see *SDK 4.x notes* below.
+Install `langfuse>=4.7`. SDK 4.7 and later write directly to the Langfuse v4 data model; the current SDK 5 (Python 3.11+, Langfuse Cloud or self-hosted v4.59+) also sends the `x-langfuse-ingestion-version: 4` header. The hooks use only `start_as_current_observation` and `propagate_attributes`, which both majors provide. Older Langfuse 3.x SDKs still work through a compatibility shim — see *SDK 4.x notes* below.
 
 If the user has multiple Python versions, prefer the one already used by the AI tool you're integrating (e.g. some tools spawn `python3` from their own bundled env). When in doubt, check the user's shell `command -v python3` and the resolved version — don't assume the system default.
 
@@ -117,7 +117,7 @@ With the four values in hand, drive the install directly instead of running `ins
 
 ```bash
 # 1. install Python SDK
-python3 -m pip install --upgrade "langfuse>=4.0"
+python3 -m pip install --upgrade "langfuse>=4.7"
 
 # 2. copy hook + create state dir (paths per tool — see Step 4 table)
 TOOL=<tool>

@@ -59,21 +59,23 @@ TRACE_TO_LANGFUSE=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
-LANGFUSE_HOOK_TRANSPORT=otlp
 ```
 
-`LANGFUSE_HOOK_TRANSPORT` selects how the shared Node runtime reaches Langfuse.
+The shared Node runtime sends to Langfuse over OTLP, the route Langfuse supports. `LANGFUSE_HOOK_TRANSPORT` changes that only if you need to.
 
 | Value | Sends to | Use with |
 |---|---|---|
-| `otlp` | `/api/public/otel/v1/traces` (OTLP/HTTP JSON, `x-langfuse-ingestion-version: 4`) | Langfuse Cloud, self-hosted v4 |
-| `legacy` or unset | `/api/public/ingestion` | Self-hosted v3, or v4 running in `legacy` or `dual` write mode |
+| unset or `auto` | `/api/public/otel/v1/traces` (OTLP/HTTP JSON, `x-langfuse-ingestion-version: 4`). If the server has no such endpoint, `/api/public/ingestion` for that server | Everything: Langfuse Cloud, self-hosted v4, self-hosted v3 |
+| `otlp` | OTLP only, no fallback | When a wrong URL should fail instead of falling back |
+| `legacy` | `/api/public/ingestion` only | Deprecated by Langfuse. Self-hosted before v3.22, which has no OTLP endpoint |
 
-Langfuse Cloud stopped storing trace events sent to `/api/public/ingestion` on 2026-11-16, so a Cloud project needs `otlp`. An existing install is never switched for you: `doctor` and the setup script print a warning, and you change the setting. To switch, add the line above or run setup with `--langfuse-transport otlp`. To go back, set `legacy` or restore the `.env.bak-<timestamp>` file the setup script writes next to `.env`. Do not send one project both ways: each turn would be stored twice.
+Langfuse Cloud stopped storing trace events sent to `/api/public/ingestion` on 2026-11-16, and self-hosted v4 rejects them outside its transitional `legacy` and `dual` write modes. An install made before this default existed moves to OTLP when its runtime is updated. For turns that began before the move, the project is read first, so a turn already stored through legacy ingestion is not stored again. To stay on legacy ingestion, set `LANGFUSE_HOOK_TRANSPORT=legacy`; `doctor` then prints a deprecation warning.
 
-With `otlp`, a turn is sent once it has finished, and never sent again after Langfuse accepts it, because Langfuse v4 does not deduplicate span IDs. A turn left without a Stop event is closed and sent after its transcript has been idle for an hour. Prompt and tool bodies, turn events and adapter metadata are sent as before, redacted and with the same per-string limit as legacy ingestion (`LANGFUSE_HOOK_MAX_CHARS`, default 20,000). See [what is not captured](docs/setup-agent-observability.md#what-is-not-captured).
+A turn is sent once it has finished, and never sent again after Langfuse accepts it, because Langfuse v4 does not deduplicate span IDs. A turn left without a Stop event is closed and sent after its transcript has been idle for an hour. Prompt and tool bodies, turn events and adapter metadata are sent redacted, with the per-string limit `LANGFUSE_HOOK_MAX_CHARS` (default 20,000). Set `LANGFUSE_HOOK_CAPTURE_CONTENT=false` to leave bodies out. See [what is not captured](docs/setup-agent-observability.md#what-is-not-captured) and [deprecation status](docs/setup-agent-observability.md#deprecation-status).
 
-Sub-agent work (Claude Code agents, threads spawned by Codex) is read from its own files and sent as a `Subagent: <type>` span inside the turn that started it, and also as a trace of its own tagged `subagent`. Tokens are counted on the turn only, so totals do not double. See [sub-agents](docs/setup-agent-observability.md#sub-agents). Set `LANGFUSE_HOOK_CAPTURE_CONTENT=false` to leave them out. The standalone Python integrations under `tools/` use the Langfuse SDK and are not affected by this setting.
+Sub-agent work (Claude Code agents, threads spawned by Codex, Oh My Pi task sessions) is read from its own files and sent as a `Subagent: <type>` span inside the turn that started it, and also as a trace of its own tagged `subagent`. Tokens are counted on the turn only, so totals do not double. See [sub-agents](docs/setup-agent-observability.md#sub-agents).
+
+The standalone Python integrations under `tools/` use the Langfuse Python SDK, which sends over OTLP. They run on SDK 4.7 or later and on the current SDK 5.
 
 ### 2. Install hooks for your agents
 
@@ -108,7 +110,7 @@ Use `codex` in those diagnostic commands if its configuration holds the project 
 
 ## Add Grafana Tempo
 
-The hooks send directly to Langfuse. The Collector sends the OTLP copy to Tempo, and Grafana reads Tempo. Goose's native exporter goes through the Collector to both destinations. Provide existing Grafana, Tempo, and OpenTelemetry Collector binaries. The Collector distribution needs `file`, `resource`, and `otlp_http`.
+The hooks send directly to Langfuse. The Collector sends the OTLP copy to Tempo, and Grafana reads Tempo. Goose's native exporter goes through the Collector to both destinations. Provide existing Grafana, Tempo, and OpenTelemetry Collector binaries. The Collector distribution needs `file`, `transform`, and `otlp_http` (core distribution 0.164 or later, or contrib).
 
 **Windows**
 

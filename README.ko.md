@@ -56,21 +56,23 @@ TRACE_TO_LANGFUSE=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
-LANGFUSE_HOOK_TRANSPORT=otlp
 ```
 
-`LANGFUSE_HOOK_TRANSPORT`는 공통 Node 런타임이 Langfuse로 보내는 방식을 정합니다.
+공통 Node 런타임은 Langfuse가 지원하는 경로인 OTLP로 보냅니다. `LANGFUSE_HOOK_TRANSPORT`는 필요할 때만 바꿉니다.
 
 | 값 | 전송 경로 | 대상 |
 |---|---|---|
-| `otlp` | `/api/public/otel/v1/traces` (OTLP/HTTP JSON, `x-langfuse-ingestion-version: 4`) | Langfuse Cloud, 자체 호스팅 v4 |
-| `legacy` 또는 미설정 | `/api/public/ingestion` | 자체 호스팅 v3, 쓰기 모드가 `legacy`·`dual`인 v4 |
+| 미설정 또는 `auto` | `/api/public/otel/v1/traces` (OTLP/HTTP JSON, `x-langfuse-ingestion-version: 4`). 서버에 이 엔드포인트가 없으면 그 서버에 한해 `/api/public/ingestion` | 전부: Langfuse Cloud, 자체 호스팅 v4·v3 |
+| `otlp` | OTLP만, 폴백 없음 | 주소가 틀렸을 때 폴백 대신 실패하게 하려는 경우 |
+| `legacy` | `/api/public/ingestion`만 | Langfuse가 사용 중단한 경로. OTLP 엔드포인트가 없는 v3.22 이전 자체 호스팅 |
 
-Langfuse Cloud는 2026-11-16부터 `/api/public/ingestion`으로 들어온 트레이스 이벤트를 저장하지 않으므로 Cloud 프로젝트에는 `otlp`가 필요합니다. 기존 설치의 전송 방식은 자동으로 바뀌지 않습니다. `doctor`와 설치 스크립트가 경고를 출력하면 직접 바꾸세요. 전환하려면 위 줄을 추가하거나 설치 스크립트에 `--langfuse-transport otlp`를 붙입니다. 되돌리려면 `legacy`로 바꾸거나, 설치 스크립트가 `.env` 옆에 남기는 `.env.bak-<시각>` 파일로 복원합니다. 한 프로젝트에 두 방식으로 동시에 보내면 턴이 두 번 저장됩니다.
+Langfuse Cloud는 2026-11-16부터 `/api/public/ingestion`으로 들어온 트레이스 이벤트를 저장하지 않고, 자체 호스팅 v4도 전환용 쓰기 모드(`legacy`, `dual`) 밖에서는 거부합니다. 이 기본값 이전에 설치한 환경은 런타임을 갱신하면 OTLP로 넘어갑니다. 전환 이전에 시작된 턴은 프로젝트를 먼저 조회하므로, legacy로 이미 저장된 턴이 다시 저장되지 않습니다. legacy를 유지하려면 `LANGFUSE_HOOK_TRANSPORT=legacy`를 설정하세요. 이 경우 `doctor`가 사용 중단 경고를 출력합니다.
 
-`otlp`에서는 턴이 끝난 뒤에 한 번 보내고, Langfuse가 받은 턴은 다시 보내지 않습니다. Langfuse v4는 같은 스팬 ID를 중복 제거하지 않기 때문입니다. Stop 이벤트 없이 끝난 턴은 트랜스크립트가 1시간 동안 변하지 않으면 종료 처리해 전송합니다. 프롬프트와 도구 본문, 턴 이벤트, 어댑터 메타데이터는 이전처럼 전송되며, 마스킹 후 legacy와 같은 문자열 길이 제한(`LANGFUSE_HOOK_MAX_CHARS`, 기본 20,000자)을 적용합니다. [수집되지 않는 것](docs/setup-agent-observability.md#what-is-not-captured)도 확인하세요.
+턴은 끝난 뒤에 한 번 보내고, Langfuse가 받은 턴은 다시 보내지 않습니다. Langfuse v4는 같은 스팬 ID를 중복 제거하지 않기 때문입니다. Stop 이벤트 없이 끝난 턴은 트랜스크립트가 1시간 동안 변하지 않으면 종료 처리해 전송합니다. 프롬프트와 도구 본문, 턴 이벤트, 어댑터 메타데이터는 마스킹 후 문자열 길이 제한(`LANGFUSE_HOOK_MAX_CHARS`, 기본 20,000자)을 적용해 전송합니다. 본문을 빼려면 `LANGFUSE_HOOK_CAPTURE_CONTENT=false`를 설정하세요. [수집되지 않는 것](docs/setup-agent-observability.md#what-is-not-captured)과 [사용 중단 현황](docs/setup-agent-observability.md#deprecation-status)도 확인하세요.
 
-서브에이전트(Claude Code 에이전트, Codex가 띄운 스레드)의 모델·도구 호출은 부모 턴의 트레이스 안에 `Subagent: <유형>` 스팬으로 들어가고, `subagent` 태그가 붙은 별도 트레이스로도 볼 수 있습니다. 토큰은 부모 턴 쪽에만 집계되므로 합계가 두 배가 되지 않습니다. 자세한 내용은 [서브에이전트](docs/setup-agent-observability.md#sub-agents)를 참고하세요. 본문을 빼려면 `LANGFUSE_HOOK_CAPTURE_CONTENT=false`를 설정하세요. `tools/` 아래의 Python 단독 통합은 Langfuse SDK를 쓰므로 이 설정의 영향을 받지 않습니다.
+서브에이전트(Claude Code 에이전트, Codex가 띄운 스레드, Oh My Pi 태스크 세션)의 모델·도구 호출은 부모 턴의 트레이스 안에 `Subagent: <유형>` 스팬으로 들어가고, `subagent` 태그가 붙은 별도 트레이스로도 볼 수 있습니다. 토큰은 부모 턴 쪽에만 집계되므로 합계가 두 배가 되지 않습니다. 자세한 내용은 [서브에이전트](docs/setup-agent-observability.md#sub-agents)를 참고하세요.
+
+`tools/` 아래의 Python 단독 통합은 OTLP로 보내는 Langfuse Python SDK를 사용합니다. SDK 4.7 이상과 현행 SDK 5에서 동작합니다.
 
 ### 2. 에이전트 훅 설치
 
@@ -105,7 +107,7 @@ Codex 설정에 프로젝트 키가 있다면 위 명령에서 `claude`를 `code
 
 ## Grafana Tempo 연결
 
-훅은 Langfuse로 트레이스를 보내고, Collector는 OTLP 사본을 Tempo로 전달합니다. Grafana는 Tempo에서 트레이스를 조회합니다. Goose는 Collector를 거쳐 두 곳에 전송합니다. Grafana, Tempo, OpenTelemetry Collector 바이너리가 필요합니다. Collector에는 `file`, `resource`, `otlp_http` 구성 요소가 있어야 합니다.
+훅은 Langfuse로 트레이스를 보내고, Collector는 OTLP 사본을 Tempo로 전달합니다. Grafana는 Tempo에서 트레이스를 조회합니다. Goose는 Collector를 거쳐 두 곳에 전송합니다. Grafana, Tempo, OpenTelemetry Collector 바이너리가 필요합니다. Collector에는 `file`, `transform`, `otlp_http` 구성 요소가 있어야 합니다(core 배포판 0.164 이상 또는 contrib).
 
 **Windows**
 
