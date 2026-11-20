@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import type { Config } from './config.ts';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { readTraceObservations, withReadApi } from './audit.ts';
-import { acquire, contentHash, MAX_ATTEMPTS, prune, readRecord, setOtlpUnavailable, transportState, VERIFIED, writeRecord,
+import { acquire, contentHash, MAX_ATTEMPTS, prune, readRecord, reconcile, setOtlpUnavailable, transportState, VERIFIED, writeRecord,
   type DeliveryRecord } from './delivery.ts';
 import { langfuseLegacyDestination, resolveDestinations, type Destination } from './destinations.ts';
 import { LangfuseClient, type IngestionEvent, type IngestResult } from './langfuse.ts';
@@ -223,10 +223,28 @@ async function deliverOtlp(config: Config, destination: Destination, traceId: st
     const settled = await storedBeforeOtlp(config, destination, traceId, events, observations, hashes, dir, logger);
     if (settled) return settled;
   }
-  const previous = readRecord(dir, traceId, destination.id);
+  let previous = readRecord(dir, traceId, destination.id);
   // The receiver may already hold these spans and does not deduplicate span IDs,
-  // so an unknown outcome is never retried without an operator's decision.
-  if (previous?.status === 'unconfirmed') return { traceId, status: 'held', sent: 0, message: previous.lastError };
+  // so an unknown outcome is never sent again blind. Langfuse can be asked: once
+  // enough time has passed for ingestion to finish, read the trace, accept what
+  // is there and release only what is missing. A relay cannot be read, so its
+  // unconfirmed turns wait for an operator.
+  if (previous?.status === 'unconfirmed') {
+    const age = Date.now() - Date.parse(previous.updatedAt);
+    if (destination.kind !== 'langfuse-otlp' || !previous.pending?.length || !(age > config.reconcileAfterMs) || !config.reconcileAfterMs) {
+      return { traceId, status: 'held', sent: 0, message: previous.lastError };
+    }
+    try {
+      const client = new LangfuseClient({ baseUrl: config.baseUrl, publicKey: config.publicKey!, secretKey: config.secretKey!,
+        timeoutMs: config.timeoutMs, logger });
+      const stored = new Set((await withReadApi(undefined, api => readTraceObservations(client, api, traceId))).value.map(span => span.id));
+      const settled = reconcile(dir, previous, stored, otlpSpanId);
+      logger.info(`${destination.label}: unconfirmed trace ${traceId} read back: ${settled?.found ?? 0} span(s) stored, ${settled?.released ?? 0} to send`);
+    } catch {
+      return { traceId, status: 'held', sent: 0, message: previous.lastError };
+    }
+    previous = readRecord(dir, traceId, destination.id);
+  }
 
   const record = baseRecord(previous, traceId, destination.id, events);
   const fresh = [...hashes.keys()].filter(id => !(id in record.spans));

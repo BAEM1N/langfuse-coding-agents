@@ -34,6 +34,11 @@ export interface Config {
    * treated as ended (interrupted, or the session was closed). 0 disables.
    */
   staleTurnMs: number;
+  /**
+   * An unconfirmed delivery to Langfuse is settled by reading the trace back once
+   * it is this old, long enough for ingestion to have finished. 0 leaves it to an operator.
+   */
+  reconcileAfterMs: number;
   /** Read sub-agent transcripts and attach their work to the turn that started them. */
   subagents: boolean;
   /** Also send each sub-agent run as a trace of its own (without usage, to avoid double counting). */
@@ -135,6 +140,10 @@ export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = proce
     transportError: knownTransport ? undefined : 'LANGFUSE_HOOK_TRANSPORT must be auto, otlp or legacy',
     subagents: (pick(env, 'CODING_AGENT_SUBAGENTS') ?? '').toLowerCase() !== 'false',
     subagentTraces: (pick(env, 'CODING_AGENT_SUBAGENT_TRACES') ?? '').toLowerCase() !== 'false',
+    reconcileAfterMs: (() => {
+      const minutes = Number(pick(env, 'LANGFUSE_HOOK_RECONCILE_MINUTES') ?? '15');
+      return Number.isFinite(minutes) && minutes >= 0 ? minutes * 60_000 : 15 * 60_000;
+    })(),
     staleTurnMs: (() => {
       const minutes = Number(pick(env, 'LANGFUSE_HOOK_STALE_TURN_MINUTES') ?? '60');
       return Number.isFinite(minutes) && minutes >= 0 ? minutes * 60_000 : 60 * 60_000;

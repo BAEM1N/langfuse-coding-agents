@@ -79,6 +79,7 @@ Optional:
 | `LANGFUSE_HOOK_CAPTURE_CONTENT` | — | `false` leaves prompt and tool bodies out of the direct OTLP route |
 | `CODING_AGENT_SUBAGENTS` | `true` | `false` stops reading Claude Code sub-agent transcripts and Codex spawned-thread rollouts |
 | `CODING_AGENT_SUBAGENT_TRACES` | `true` | `false` keeps sub-agent runs only as spans inside the turn, without a trace of their own |
+| `LANGFUSE_HOOK_RECONCILE_MINUTES` | `15` | an unconfirmed delivery to Langfuse this old is settled by reading the trace back and sending only what is missing; `0` leaves it to `verify --reconcile` |
 | `LANGFUSE_HOOK_STALE_TURN_MINUTES` | `60` | a turn with no end marker whose transcript has been idle this long is closed and sent with `endedWithoutStop: true`; `0` disables |
 | `CODING_AGENT_OTLP_FORWARDS_TO_LANGFUSE` | `false` | `true` when the OTLP endpoint is a Collector that also feeds Langfuse; direct export is then refused |
 | `LANGFUSE_HOOK_ALLOW_DUAL_ROUTE` | `false` | `true` to send direct and through such a Collector anyway (the project stores each turn twice) |

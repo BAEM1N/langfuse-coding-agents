@@ -6,6 +6,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { readObservations, withReadApi } from './audit.ts';
 import { subagentTraceIdFor, traceIdFor } from './batch.ts';
 import type { Config } from './config.ts';
+import { listRecords } from './delivery.ts';
 import { LangfuseClient } from './langfuse.ts';
 import { nullLogger } from './log.ts';
 import { runHook } from './run.ts';
@@ -47,6 +48,8 @@ interface Scenario {
    * session instead of nesting them. Gives the two trace IDs to compare.
    */
   separate?: { turn: string; subagent: string };
+  /** Agent home of an integration whose send() returns nothing: its delivery records say what happened. */
+  deliveryHome?: string;
   /** Hook timestamps are taken when the hook runs, so timeline warnings may be added: compare without them. */
   ignoreEvents?: boolean;
   /** Checks only this format can make. */
@@ -196,6 +199,7 @@ function ompScenario(dir: string, session: string): Scenario {
   ];
   return { tag: 'oh-my-pi', turnKey: 'u', runKey: 'SelfTestTask:tu', ownerTool: 'task', subagent: 'SelfTestTask',
     turnTypes: 'AGENT,AGENT,GENERATION,GENERATION,GENERATION,TOOL', innerTypes: 'GENERATION', mainTokens: 10 + 14, agentTokens: 34,
+    deliveryHome: home,
     environment: { PI_CODING_AGENT_DIR: home },
     async send() {
       // The extension is what Oh My Pi loads; drive it the way the host does.
@@ -327,7 +331,7 @@ function antigravityScenario(dir: string, session: string): Scenario {
   ]));
   return { tag: 'antigravity', turnKey: '0', runKey: child, ownerTool: 'invoke_subagent', subagent: 'selftest',
     turnTypes: 'AGENT,AGENT,GENERATION,GENERATION,GENERATION,GENERATION,TOOL,TOOL', innerTypes: 'GENERATION,GENERATION,TOOL',
-    mainTokens: 150 + 192, agentTokens: 150 + 245, ignoreEvents: true,
+    mainTokens: 150 + 192, agentTokens: 150 + 245, ignoreEvents: true, deliveryHome: join(dir, 'home'),
     environment: { LANGFUSE_HOOK_ANTIGRAVITY_HOME: join(dir, 'home'), LANGFUSE_ANTIGRAVITY_STATE_DIR: join(dir, 'home', 'state', 'langfuse') },
     async send() {
       // The five hook phases Antigravity runs around a turn that calls one tool.
@@ -423,7 +427,12 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
   let api: 'v2' | 'legacy' | undefined = options.api;
   let deleted: boolean | undefined;
   try {
-    const statuses = await scenario.send();
+    let statuses = await scenario.send();
+    if (!statuses && scenario.deliveryHome) {
+      // This integration reports nothing back, so read what it recorded about the delivery.
+      statuses = listRecords(join(scenario.deliveryHome, 'state', 'delivery')).filter(record => record.destination.startsWith('langfuse-otlp'))
+        .map(record => record.status === 'confirmed' ? 'delivered' : ` `.trim());
+    }
     if (statuses) {
       check('accepted by the OTLP endpoint', statuses.length === 2 && statuses.every(status => status === 'delivered'), statuses.join('; ') || 'nothing was sent');
     }

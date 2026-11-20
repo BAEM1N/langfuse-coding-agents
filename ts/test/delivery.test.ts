@@ -35,7 +35,7 @@ const SETTINGS = ['TRACE_TO_LANGFUSE', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_K
   'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT', 'OTEL_EXPORTER_OTLP_HEADERS', 'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
   'OTEL_EXPORTER_OTLP_PROTOCOL', 'OTEL_EXPORTER_OTLP_TRACES_PROTOCOL', 'OTEL_EXPORTER_OTLP_TIMEOUT',
   'OTEL_EXPORTER_OTLP_TRACES_TIMEOUT', 'OTEL_CAPTURE_CONTENT', 'OTEL_SERVICE_NAME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
-  'LANGFUSE_AGENT_HOOKS_CONFIG_DIR', 'LANGFUSE_HOOK_STALE_TURN_MINUTES'];
+  'LANGFUSE_AGENT_HOOKS_CONFIG_DIR', 'LANGFUSE_HOOK_STALE_TURN_MINUTES', 'LANGFUSE_HOOK_RECONCILE_MINUTES'];
 
 interface Seen { path: string; headers: IncomingHttpHeaders; body: any }
 type Reply = { status?: number; body?: string; delayMs?: number } | void;
@@ -671,4 +671,38 @@ test('verify reads a trace back from Tempo, and export-events takes a turn from 
   assert.equal(backend.requests.filter(request => request.path === '/api/public/ingestion').length, 0, 'not the deprecated ingestion API');
   assert.equal(await handOver(), 0);
   assert.equal(posts().length, 1, 'handed over twice, stored once');
+});
+
+test('an unconfirmed turn is settled by reading Langfuse back once it is old enough, without an operator', async (t) => {
+  let mode: 'lost' | 'ok' = 'lost';
+  const storedIds: string[] = [];
+  const posts: Seen[] = [];
+  const lf = await receiver(t, (request) => {
+    if (request.path.startsWith('/api/public/v2/observations')) {
+      return { body: JSON.stringify({ data: storedIds.map(id => ({ id, traceId: 't', type: 'SPAN' })), meta: {} }) };
+    }
+    posts.push(request);
+    if (mode === 'lost') {
+      // The server stored three of the four spans, then the response was lost.
+      storedIds.push(...spansOf(request).slice(0, 3).map(span => span.spanId));
+      return { delayMs: 700 };
+    }
+    return {};
+  });
+  const box = sandbox(t, langfuse(lf.url, { LANGFUSE_HOOK_TIMEOUT_MS: '150', LANGFUSE_HOOK_RECONCILE_MINUTES: '0.002' })); // 120 ms
+  writeFileSync(box.transcript, fixture('claude-transcript.jsonl').slice(0, 8).join('\n') + '\n');
+  const first = await stop('claude', box.transcript);
+  assert.deepEqual(statuses(first, 'langfuse-otlp'), ['unconfirmed']);
+  const soon = await stop('claude', box.transcript);
+  assert.deepEqual(statuses(soon, 'langfuse-otlp'), ['held'], 'too soon to tell: ingestion may not have finished');
+  assert.equal(posts.length, 1);
+
+  mode = 'ok';
+  await new Promise(resolve => setTimeout(resolve, 900));
+  const later = await stop('claude', box.transcript);
+  assert.deepEqual(statuses(later, 'langfuse-otlp'), ['delivered']);
+  assert.equal(posts.length, 2);
+  assert.equal(spansOf(posts[1]).length, 1, 'only the span the server did not have');
+  assert.ok(!storedIds.includes(spansOf(posts[1])[0].spanId), 'nothing the server already held is sent again');
+  assert.equal(listRecords(deliveryDir(loadConfig('claude')))[0].status, 'confirmed');
 });

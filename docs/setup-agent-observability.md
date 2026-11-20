@@ -187,10 +187,15 @@ or credentials.
 |---|---|---|
 | `confirmed` | the destination accepted every span | not sent again |
 | `failed`, `partial` | the destination refused some or all spans | the refused spans are retried |
-| `unconfirmed` | timeout, lost response, or an OTLP partial rejection | held until you decide |
+| `unconfirmed` | timeout, lost response, or an OTLP partial rejection | Langfuse: read back after 15 minutes, then only the missing spans are sent. A relay: held until you decide |
 
 Langfuse v4 and Tempo keep both copies when a span ID is sent twice, so an
-`unconfirmed` turn is not resent on its own. Read it back with `verify`, which
+`unconfirmed` turn is never resent blind. For the direct Langfuse route the hook
+settles it by itself: once the record is 15 minutes old
+(`LANGFUSE_HOOK_RECONCILE_MINUTES`, `0` to turn off), the next hook run reads the
+trace back, accepts the spans it finds and sends only the rest. A Collector
+cannot be read back, so its unconfirmed turns wait for you. To settle one
+sooner, read it back with `verify`, which
 shows how many of its spans the backend holds. `verify <agent> <traceId>
 --reconcile` then accepts the spans it found and releases only the missing ones
 for the next run. Wait a few minutes after the send first: a read can run ahead
