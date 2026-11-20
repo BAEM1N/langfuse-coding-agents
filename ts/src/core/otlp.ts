@@ -58,6 +58,18 @@ const content = (value: unknown, maxChars = DEFAULT_MAX_CHARS) =>
   value === undefined ? undefined : JSON.stringify(sanitize(value, { redact: true, maxChars }));
 const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
+/** gen_ai.provider.name from what the agent recorded, else from the model family. Unknown stays unset. */
+function providerName(model: unknown, recorded: unknown): string | undefined {
+  const known: Record<string, string> = { openai: 'openai', anthropic: 'anthropic', google: 'gcp.gemini', gemini: 'gcp.gemini',
+    azure: 'azure.ai.openai', bedrock: 'aws.bedrock', vertex: 'gcp.vertex_ai', mistral: 'mistral_ai', xai: 'x_ai', groq: 'groq', deepseek: 'deepseek' };
+  if (typeof recorded === 'string' && known[recorded.toLowerCase()]) return known[recorded.toLowerCase()];
+  if (typeof model !== 'string') return undefined;
+  if (/^claude/i.test(model)) return 'anthropic';
+  if (/^(gpt|o\d|chatgpt|codex)/i.test(model)) return 'openai';
+  if (/^gemini/i.test(model)) return 'gcp.gemini';
+  return undefined;
+}
+
 const OBSERVATION_TYPES: Record<string, string> = { 'agent-create': 'agent', 'generation-create': 'generation',
   'tool-create': 'tool', 'span-create': 'span' };
 
@@ -172,7 +184,11 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
       ...(typeof body.parentObservationId === 'string' && observations.has(body.parentObservationId) ? { parentSpanId: otlpSpanId(body.parentObservationId) } : {}),
       name: String(body.name ?? operation ?? 'span'), kind: generation ? 3 : 1, startTimeUnixNano: epoch(start), endTimeUnixNano: epoch(end),
       status: { code: body.level === 'ERROR' ? 2 : 0 }, links,
-      attributes: attributes({ 'gen_ai.operation.name': operation, 'gen_ai.agent.name': agent,
+      attributes: attributes({ 'gen_ai.operation.name': operation,
+        // A sub-agent run is its own agent; everything else belongs to the coding agent.
+        'gen_ai.agent.name': meta?.subagent === true && typeof meta.agentType === 'string' ? meta.agentType
+          : meta?.subagent === true && typeof meta.nickname === 'string' ? meta.nickname : agent,
+        'gen_ai.provider.name': generation ? providerName(body.model, (trace?.metadata as { modelProvider?: unknown } | undefined)?.modelProvider) : undefined,
         'user.id': generation || tool ? undefined : trace?.userId,
         'gen_ai.conversation.id': trace?.sessionId, 'gen_ai.request.model': body.model,
         'gen_ai.tool.name': tool ? body.name : undefined,
@@ -180,8 +196,9 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
         'gen_ai.usage.input_tokens': typeof net?.input === 'number' ? net.input + cacheRead + cacheWrite : undefined,
         'gen_ai.usage.output_tokens': typeof net?.output === 'number' ? net.output + reasoning : undefined,
         'gen_ai.usage.cache_read.input_tokens': net && cacheRead,
-        'gen_ai.usage.cache_creation.input_tokens': net && cacheWriteReported,
-        'coding_agent.usage.reasoning_tokens': reasoning || undefined,
+        // Current GenAI convention names (cache_creation.* was renamed cache_write.*).
+        'gen_ai.usage.cache_write.input_tokens': net && cacheWriteReported,
+        'gen_ai.usage.reasoning.output_tokens': reasoning || undefined,
         'coding_agent.timing.has_end': Number.isFinite(observedEnd),
         'coding_agent.input': input,
         'coding_agent.output': output,

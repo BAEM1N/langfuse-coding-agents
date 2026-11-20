@@ -90,6 +90,9 @@ test('Claude sub-agent: spans inside the turn under the tool that started it, pl
   const agent = turn.find(span => span.name === 'Subagent: Explore');
   assert.equal(agent.parentSpanId, bash.spanId, 'under the tool call that started it');
   assert.equal(attr(agent, 'langfuse.observation.metadata.subagent'), true);
+  assert.equal(attr(agent, 'gen_ai.agent.name'), 'Explore', 'a sub-agent run is its own agent');
+  assert.equal(attr(agent, 'gen_ai.operation.name'), 'invoke_agent');
+  assert.equal(attr(root, 'gen_ai.agent.name'), 'claude');
   assert.equal(attr(agent, 'langfuse.observation.metadata.agentType'), 'Explore');
   assert.match(attr(agent, 'langfuse.observation.input'), /find the files/);
   const inner = turn.filter(span => span.parentSpanId === agent.spanId);

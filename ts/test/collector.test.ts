@@ -43,13 +43,14 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-const payload = (marker: string) => ({ resourceSpans: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: marker } }] },
+const payload = (marker: string, user?: string) => ({ resourceSpans: [{ resource: { attributes: [{ key: 'service.name', value: { stringValue: marker } },
+  ...(user ? [{ key: 'user.id', value: { stringValue: user } }] : [])] },
   scopeSpans: [{ scope: { name: 'collector-test' }, spans: [{ traceId: '0af7651916cd43dd8448eb211c80319c', spanId: 'b7ad6b7169203331',
     name: marker, kind: 1, startTimeUnixNano: '1794146894000000000', endTimeUnixNano: '1794146895000000000' }] }] }] });
 
-async function post(port: number, marker: string): Promise<number> {
+async function post(port: number, marker: string, user?: string): Promise<number> {
   const res = await fetch(`http://127.0.0.1:${port}/v1/traces`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload(marker)) });
+    body: JSON.stringify(payload(marker, user)) });
   return res.status;
 }
 
@@ -115,4 +116,11 @@ test('example Collector: 14318 route skips Langfuse, the both route reaches Lang
     const fromGoose = langfuse.requests.find(request => request.text.includes('route-goose'))!;
     assert.equal(fromGoose.headers['x-langfuse-ingestion-version'], undefined);
     assert.ok(fromGoose.text.includes('collector-user'));
+
+    // The transform processor only fills what is missing: an exporter's own user is kept.
+    assert.equal(await post(goose, 'route-goose-own', 'exporter-user'), 200);
+    assert.ok(await until(() => langfuse.requests.some(request => request.text.includes('route-goose-own'))));
+    const kept = langfuse.requests.find(request => request.text.includes('route-goose-own'))!;
+    assert.ok(kept.text.includes('exporter-user') && !kept.text.includes('collector-user'));
+    assert.ok(kept.text.includes('test-arch'), 'attributes the exporter left out are still filled in');
   });

@@ -153,7 +153,9 @@ test('Claude turn: Langfuse OTLP and a second receiver get the same trace, with 
     { input: 10, output: 50, cache_read_input_tokens: 2000, cache_creation_input_tokens: 100, total: 2160 });
   assert.equal(attr(first, 'gen_ai.usage.input_tokens'), 2110);
   assert.equal(attr(first, 'gen_ai.usage.cache_read.input_tokens'), 2000);
-  assert.equal(attr(first, 'gen_ai.usage.cache_creation.input_tokens'), 100);
+  assert.equal(attr(first, 'gen_ai.usage.cache_write.input_tokens'), 100);
+  assert.equal(attr(first, 'gen_ai.provider.name'), 'anthropic');
+  assert.equal(attr(first, 'gen_ai.usage.cache_creation.input_tokens'), undefined, 'the renamed attribute is not sent under its old name');
   assert.equal(attr(first, 'gen_ai.usage.output_tokens'), 50);
   assert.deepEqual(JSON.parse(attr(next, 'langfuse.observation.usage_details')),
     { input: 5, output: 12, cache_read_input_tokens: 2100, total: 2117 });
@@ -192,7 +194,8 @@ test('Codex turn: reasoning tokens are reported once and parents hold', async (t
     'exclusive parts add up to the source total: reasoning is neither dropped nor doubled');
   assert.equal(attr(model, 'gen_ai.usage.input_tokens'), 1000, 'inclusive of cached input, as in the source');
   assert.equal(attr(model, 'gen_ai.usage.output_tokens'), 300, 'inclusive of reasoning, as in the source');
-  assert.equal(attr(model, 'coding_agent.usage.reasoning_tokens'), 200);
+  assert.equal(attr(model, 'gen_ai.usage.reasoning.output_tokens'), 200);
+  assert.equal(attr(model, 'gen_ai.provider.name'), 'openai');
   assert.equal(attr(model, 'gen_ai.usage.cache_read.input_tokens'), 600);
   for (const span of spans) assert.equal(attr(span, 'langfuse.session.id'), '01a1bb7c-f9d0-7d62-8250-f2b04cedb471');
 });

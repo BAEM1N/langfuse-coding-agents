@@ -50,23 +50,20 @@ exporters:
 processors:
   # Goose only. The shared hooks already set user and host on their spans, so
   # this processor is kept off their pipelines.
-  resource/local-user:
-    attributes:
-      - key: user.id
-        value: ${env:CODING_AGENT_COLLECTOR_USER}
-        action: insert
-      - key: os.type
-        value: ${env:CODING_AGENT_COLLECTOR_OS}
-        action: insert
-      - key: os.version
-        value: ${env:CODING_AGENT_COLLECTOR_OS_VERSION}
-        action: insert
-      - key: host.arch
-        value: ${env:CODING_AGENT_COLLECTOR_ARCH}
-        action: insert
-      - key: deployment.environment.name
-        value: ${env:CODING_AGENT_COLLECTOR_ENVIRONMENT}
-        action: insert
+  # The transform processor replaces the resource processor, which is superseded
+  # and leaves the core distribution. Each statement fills an attribute only when
+  # the exporter did not set it (the resource processor's `insert`).
+  # Needs `transform`: core distribution v0.164.0 or later, or contrib.
+  transform/local-user:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(resource.attributes["user.id"], "${env:CODING_AGENT_COLLECTOR_USER}") where resource.attributes["user.id"] == nil
+          - set(resource.attributes["os.type"], "${env:CODING_AGENT_COLLECTOR_OS}") where resource.attributes["os.type"] == nil
+          - set(resource.attributes["os.version"], "${env:CODING_AGENT_COLLECTOR_OS_VERSION}") where resource.attributes["os.version"] == nil
+          - set(resource.attributes["host.arch"], "${env:CODING_AGENT_COLLECTOR_ARCH}") where resource.attributes["host.arch"] == nil
+          - set(resource.attributes["deployment.environment.name"], "${env:CODING_AGENT_COLLECTOR_ENVIRONMENT}") where resource.attributes["deployment.environment.name"] == nil
 
 service:
   telemetry:
@@ -82,5 +79,5 @@ service:
       exporters: [file, otlp_http/langfuse-v4, otlp_http/tempo]
     traces/goose:
       receivers: [otlp/goose]
-      processors: [resource/local-user]
+      processors: [transform/local-user]
       exporters: [file, otlp_http/langfuse, otlp_http/tempo]

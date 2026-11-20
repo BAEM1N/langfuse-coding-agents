@@ -34,8 +34,8 @@ Usage keys follow Langfuse's price tables:
 Each key counts its tokens once, and `total` is their sum. Over OTLP the same object is sent as
 `langfuse.observation.usage_details`. The `gen_ai.usage.*` attributes follow OpenTelemetry instead:
 `input_tokens` includes cached input and `output_tokens` includes reasoning, with
-`gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` and
-`coding_agent.usage.reasoning_tokens` as breakdowns. Do not add a breakdown to its total.
+`gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_write.input_tokens` and
+`gen_ai.usage.reasoning.output_tokens` as breakdowns (the names in the current GenAI conventions). Do not add a breakdown to its total.
 
 ## Install
 
