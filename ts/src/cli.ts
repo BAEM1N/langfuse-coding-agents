@@ -9,7 +9,7 @@
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
 //   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL]
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
-//   node src/cli.ts backfill <claude|codex> <transcript.jsonl> [--session ID] [--dry-run]
+//   node src/cli.ts backfill <claude|codex> <transcript.jsonl> --from ISO --to ISO [--session ID] [--dry-run]
 
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
@@ -27,6 +27,7 @@ import { LangfuseClient } from './core/langfuse.ts';
 import { createLogger } from './core/log.ts';
 import { canExport, deliveryDir, exportEvents } from './core/export.ts';
 import { clearRecord, listRecords } from './core/delivery.ts';
+import { planBackfill, runBackfill } from './core/backfill.ts';
 import { isLangfuseCloud, resolveDestinations } from './core/destinations.ts';
 import { githubAttributes, githubOptions, readGithubContext } from './core/github.ts';
 import { applyPlan, deployPackage, HOOK_EVENTS, planAntigravityInstall, planCopilotInstall, planInstall } from './install.ts';
@@ -201,19 +202,37 @@ async function cmdBackfill(agent: AgentName, path: string, args: string[]): Prom
   const cfg = loadConfig(agent);
   const session = typeof flag(args, 'session') === 'string' ? (flag(args, 'session') as string) : basename(path, '.jsonl').replace(/^rollout-[\dT-]+-/, '');
   const { turns } = parseTranscript(agent, path, session, { offset: 0, turnsBefore: 0 });
-  const events = turns.flatMap((t) => turnToEvents(t, batchOptions(cfg)));
-  console.log(`session=${session} turns=${turns.length} events=${events.length}`);
-  for (const t of turns.slice(0, 50)) {
-    const gens = t.steps.filter((s) => s.kind === 'generation').length;
-    const tools = t.steps.length - gens;
-    const input = typeof t.input === 'string' ? t.input.replace(/\s+/g, ' ').slice(0, 60) : '';
-    console.log(`  #${t.index} ${t.complete ? 'done' : 'open'} gens=${gens} tools=${tools} events=${t.events.length}  ${input}`);
+  // Historical turns keep their own metadata: GitHub context describes the checkout as it is now.
+  const config = { ...cfg, github: undefined, timeoutMs: Math.max(cfg.timeoutMs, 60000) };
+  const range = { from: timeFlag(args, 'from'), to: timeFlag(args, 'to') };
+  const plan = planBackfill(config, turns, batchOptions(config), range);
+  // The summary lists counts and IDs only, never prompt or response text.
+  console.log(`session=${session}`);
+  console.log(`range: ${range.from ?? '(not set)'} .. ${range.to ?? '(not set)'}  (by turn start time)`);
+  console.log(`turns: ${plan.turns} read, ${plan.selected.length} selected, excluded: unfinished=${plan.excluded.incomplete} outside-range=${plan.excluded.outsideRange}`);
+  if (!plan.destinations.length) console.log('destinations: (none configured)');
+  for (const d of plan.destinations) {
+    console.log(`destination: ${d.label} [${d.id}] to-send=${d.toSend} already-confirmed=${d.alreadyConfirmed}${d.configError ? `\n  CONFIG ERROR: ${d.configError}` : ''}`);
   }
-  if (flag(args, 'dry-run')) return;
-  if (!cfg.publicKey || !cfg.secretKey) throw new Error('missing Langfuse keys');
-  const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey, timeoutMs: 60000, logger: createLogger(logPath(cfg), cfg.debug) });
-  const res = await client.ingest(events);
-  console.log(res.ok ? `sent ${res.sent} events` : `errors: ${JSON.stringify(res.errors.slice(0, 5))}`);
+  if (flag(args, 'dry-run')) {
+    console.log('dry run: nothing was sent and no network request was made');
+    return;
+  }
+  const result = await runBackfill(config, plan, createLogger(logPath(cfg), cfg.debug), process.cwd());
+  if (result.foundComplete.length) console.log(`already stored in Langfuse, recorded as delivered: ${result.foundComplete.length}`);
+  if (result.existsRemotely.length) {
+    console.log(`stored in Langfuse under other observation IDs, not sent to it: ${result.existsRemotely.length}\n  ${result.existsRemotely.join('\n  ')}`);
+  }
+  for (const d of result.export?.destinations ?? []) {
+    const counts: Record<string, number> = {};
+    for (const trace of d.traces) counts[trace.status] = (counts[trace.status] ?? 0) + 1;
+    console.log(`${d.label}: ${Object.entries(counts).map(([status, n]) => `${status}=${n}`).join(' ')} (${d.evidence})`);
+    for (const trace of d.traces.filter((item) => !['delivered', 'skipped'].includes(item.status))) {
+      console.log(`  ${trace.status} ${trace.traceId}${trace.message ? ` - ${trace.message}` : ''}`);
+    }
+  }
+  if (result.export && !result.export.ok) process.exitCode = 1;
+  console.log('Read a trace back with: verify ' + agent + ' <traceId>');
 }
 
 function cmdAudit(agent: string | undefined, path: string | undefined, args: string[]): void {

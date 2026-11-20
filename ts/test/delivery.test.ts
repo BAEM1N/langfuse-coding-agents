@@ -262,6 +262,65 @@ function hookProcess(env: Record<string, string>, payload: object): Promise<{ co
   });
 }
 
+function cliProcess(env: Record<string, string>, args: string[]): Promise<{ code: number | null; output: string }> {
+  return new Promise((resolve, reject) => {
+    const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !SETTINGS.includes(key)));
+    const child = spawn(process.execPath, [CLI, ...args], { env: { ...clean, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    child.once('error', reject);
+    child.once('close', code => resolve({ code, output }));
+  });
+}
+
+test('backfill: dry run is offline, a real run needs a range, sends finished turns once, and skips stored ones', async (t) => {
+  let stored: unknown[] = [];
+  const lf = await receiver(t, request => request.path.startsWith('/api/public/v2/observations')
+    ? { body: JSON.stringify({ data: stored, meta: {} }) } : {});
+  const box = sandbox(t, langfuse(lf.url));
+  writeFileSync(box.transcript, fixture('claude-transcript.jsonl').join('\n') + '\n');
+  const range = ['--from', '2026-11-08T10:00:00Z', '--to', '2026-11-08T10:00:30Z'];
+
+  const dry = await cliProcess(box.env, ['backfill', 'claude', box.transcript, ...range, '--dry-run']);
+  assert.equal(dry.code, 0);
+  assert.equal(lf.requests.length, 0, 'dry run makes no request');
+  assert.match(dry.output, /range: 2026-11-08T10:00:00\.000Z \.\. 2026-11-08T10:00:30\.000Z/);
+  assert.match(dry.output, /turns: 2 read, 1 selected, excluded: unfinished=1 outside-range=0/);
+  assert.match(dry.output, /Langfuse \(OTLP\).*to-send=1 already-confirmed=0/);
+  assert.ok(!dry.output.includes('List files') && !dry.output.includes(SECRET_KEY), 'no prompt text or key in the summary');
+
+  const unbounded = await cliProcess(box.env, ['backfill', 'claude', box.transcript]);
+  assert.equal(unbounded.code, 1);
+  assert.match(unbounded.output, /explicit range/);
+  assert.equal(lf.requests.length, 0);
+
+  const outside = await cliProcess(box.env, ['backfill', 'claude', box.transcript, '--from', '2026-11-09T00:00:00Z', '--to', '2026-11-10T00:00:00Z']);
+  assert.equal(outside.code, 0);
+  assert.match(outside.output, /0 selected, excluded: unfinished=1 outside-range=1/);
+  assert.equal(lf.requests.length, 0);
+
+  const sent = await cliProcess(box.env, ['backfill', 'claude', box.transcript, ...range]);
+  assert.equal(sent.code, 0, sent.output);
+  assert.match(sent.output, /Langfuse \(OTLP\): delivered=1/);
+  const posts = () => lf.requests.filter(request => request.path === '/api/public/otel/v1/traces');
+  assert.equal(posts().length, 1);
+  assert.match(lf.requests[0].path, /^\/api\/public\/v2\/observations\?traceId=/, 'the project is read before anything is written');
+  assert.ok(spansOf(posts()[0]).every(span => attr(span, 'langfuse.trace.metadata.complete') === true));
+
+  const again = await cliProcess(box.env, ['backfill', 'claude', box.transcript, ...range]);
+  assert.match(again.output, /to-send=0 already-confirmed=1/);
+  assert.equal(posts().length, 1, 'a confirmed turn is not backfilled twice');
+
+  // A machine without local state, and a project that already holds the turn
+  // under legacy observation IDs: nothing is added to it.
+  rmSync(join(box.env.CLAUDE_CONFIG_DIR, 'state'), { force: true, recursive: true });
+  stored = [{ id: 'legacy-observation', traceId: spansOf(posts()[0])[0].traceId, type: 'GENERATION' }];
+  const present = await cliProcess(box.env, ['backfill', 'claude', box.transcript, ...range]);
+  assert.match(present.output, /stored in Langfuse under other observation IDs, not sent to it: 1/);
+  assert.equal(posts().length, 1);
+});
+
 test('separate hook processes send the turn once, and a restarted process sends nothing', async (t) => {
   const lf = await receiver(t, () => ({ delayMs: 150 }));
   const box = sandbox(t, langfuse(lf.url));
