@@ -96,6 +96,7 @@ Press Enter at the trace name prompt to use your home folder name, or pass `--na
 In a test directory, create `probe.txt` with a unique marker and ask the agent to read it and return its contents. In Langfuse, find the new trace and check the model call, tool execution, and following model call. Inspect the tool arguments and result plus the input/output token fields. Availability depends on the adapter and capture settings.
 
 ```sh
+node ts/src/cli.ts selftest claude                   # send a synthetic turn with a sub-agent, read it back, compare, delete
 node ts/src/cli.ts doctor claude                     # settings, destinations, last 24h of delivery results
 node ts/src/cli.ts delivery claude                   # turns that are failed, partial or unconfirmed
 node ts/src/cli.ts verify claude <traceId>           # read the trace back from Langfuse

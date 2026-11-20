@@ -9,6 +9,7 @@
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
 //   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL] [--reconcile]
 //   node src/cli.ts coverage <claude|codex> [--since ISO] [--until ISO] [--deep N]
+//   node src/cli.ts selftest [agent] [--keep]     (sends a synthetic turn to the project, checks it, deletes it)
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> --from ISO --to ISO [--session ID] [--dry-run]
 
@@ -29,6 +30,7 @@ import { createLogger } from './core/log.ts';
 import { canExport, deliveryDir, exportEvents } from './core/export.ts';
 import { clearRecord, listRecords, reconcile } from './core/delivery.ts';
 import { coverage } from './core/coverage.ts';
+import { selfTest } from './core/selftest.ts';
 import { planBackfill, runBackfill } from './core/backfill.ts';
 import { isLangfuseCloud, resolveDestinations } from './core/destinations.ts';
 import { githubAttributes, githubOptions, readGithubContext } from './core/github.ts';
@@ -286,6 +288,19 @@ async function cmdCoverage(agent: string | undefined, args: string[]): Promise<v
   if (report.stored.finishedTurnsMissing > 0) process.exitCode = 1;
 }
 
+/**
+ * Send a made-up turn with a sub-agent to the configured project, read it back,
+ * compare, and delete it. The one check that shows the whole path works.
+ */
+async function cmdSelfTest(agent: string | undefined, args: string[]): Promise<void> {
+  const target = agent && !agent.startsWith('--') ? agent : 'claude';
+  if (!TRACE_AGENTS.includes(target as TraceAgentName)) throw new Error('selftest expects an agent whose settings hold the project keys');
+  const cfg = loadConfig(target as TraceAgentName, { ...process.env });
+  const report = await selfTest(cfg, { keep: !!flag(args, 'keep'), api: readApi(args) });
+  console.log(JSON.stringify(report, null, 2));
+  if (!report.ok) process.exitCode = 1;
+}
+
 function timeFlag(args: string[], name: string): string | undefined {
   const raw = flag(args, name);
   if (raw === undefined) return undefined;
@@ -462,12 +477,14 @@ async function main(): Promise<void> {
       return cmdVerify(a1, a2, args);
     case 'coverage':
       return cmdCoverage(a1, args);
+    case 'selftest':
+      return cmdSelfTest(a1, args);
     case 'audit-langfuse':
       return cmdAuditLangfuse(a1, args);
     case 'backfill':
       return cmdBackfill(agentsArg(a1)[0], a2, rest);
     default:
-      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 11).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 12).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   }
 }
 

@@ -45,6 +45,17 @@ export class LangfuseClient {
     return await res.json() as T;
   }
 
+  /** Delete one trace. Used only to remove the self-test's own synthetic traces. */
+  async deleteTrace(traceId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.opts.baseUrl}/api/public/traces/${encodeURIComponent(traceId)}`, {
+        method: 'DELETE', headers: { Authorization: this.auth }, redirect: 'error', signal: AbortSignal.timeout(this.opts.timeoutMs) });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async ingest(events: IngestionEvent[]): Promise<IngestResult> {
     const result: IngestResult = { ok: true, sent: 0, errors: [] };
     for (const chunk of chunkBySize(events, MAX_BATCH_BYTES)) {
