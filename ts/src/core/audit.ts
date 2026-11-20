@@ -70,7 +70,9 @@ const nativeAttribute = (span: Observation | undefined, name: string) =>
 
 export function auditStoredTrace(trace: StoredTrace) {
   const observations = Array.isArray(trace.observations) ? trace.observations : [];
-  const root = observations.find((span) => span.type === 'AGENT')
+  // Sub-agent runs are AGENT observations too; the turn's root is the one without a parent.
+  const root = observations.find((span) => span.type === 'AGENT' && !(span as { parentObservationId?: string | null }).parentObservationId)
+    ?? observations.find((span) => span.type === 'AGENT')
     ?? observations.find((span) => span.type === 'CHAIN' || nativeAttribute(span, 'gen_ai.operation.name') === 'invoke_agent');
   const nativeAgent = nativeAttribute(root, 'gen_ai.agent.name');
   // Goose emits a provider span and a chat wrapper for the same request. The

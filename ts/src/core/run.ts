@@ -9,6 +9,7 @@ import { readJsonlFrom } from './jsonl.ts';
 import { canExport, exportEvents, type DestinationResult } from './export.ts';
 import { createLogger, type Logger } from './log.ts';
 import { loadState, saveState, type TranscriptState } from './state.ts';
+import { attachClaudeSubagents, attachCodexSubagents } from './subagents.ts';
 import type { AgentName, HookPayload, TraceAgentName, Turn } from './types.ts';
 
 const LABELS: Record<TraceAgentName, { label: string; tag: string }> = {
@@ -49,18 +50,27 @@ export function parseTranscript(
   path: string,
   sessionId: string,
   st: Pick<TranscriptState, 'offset' | 'turnsBefore' | 'context'>,
+  subagents = true,
 ): ParsedTranscript & { from: number } {
   const read = readJsonlFrom(path, st.offset);
   const turnsBefore = read.from === st.offset ? st.turnsBefore : 0;
   if (agent === 'claude') {
-    return { turns: parseClaudeTranscript(read.entries, { sessionId, turnsBefore }), from: read.from };
+    const turns = parseClaudeTranscript(read.entries, { sessionId, turnsBefore });
+    if (subagents) attach(() => attachClaudeSubagents(path, turns));
+    return { turns, from: read.from };
   }
   const r = parseCodexRollout(read.entries, {
     sessionId,
     turnsBefore,
     context: read.from === st.offset ? ((st.context ?? {}) as CodexContext) : {},
   });
+  if (subagents) attach(() => attachCodexSubagents(path, sessionId, r.turns));
   return { turns: r.turns, context: r.context as Record<string, unknown>, from: read.from };
+}
+
+/** Sub-agent files are extra: a problem reading them must not cost the turn itself. */
+function attach(read: () => void): void {
+  try { read(); } catch { /* the turn is exported without its sub-agents */ }
 }
 
 export function batchOptions(cfg: Config): BatchOptions {
@@ -73,6 +83,7 @@ export function batchOptions(cfg: Config): BatchOptions {
     environment: cfg.environment,
     maxChars: cfg.maxChars,
     redact: cfg.redact,
+    subagentTraces: cfg.subagentTraces,
   };
 }
 
@@ -180,7 +191,7 @@ async function closeStaleTurns(agent: AgentName, cfg: Config, statePath: string,
     try { idleFor = now - statSync(path).mtimeMs; } catch { /* transcript is gone */ }
     if (idleFor !== undefined && idleFor < cfg.staleTurnMs) continue;
     handled++;
-    const parsed = idleFor === undefined ? undefined : parseTranscript(agent, path, st.sessionId, st);
+    const parsed = idleFor === undefined ? undefined : parseTranscript(agent, path, st.sessionId, st, cfg.subagents);
     const last = parsed?.turns.at(-1);
     if (!parsed || !last) {
       const latest = loadState(statePath);
@@ -228,7 +239,7 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
   let st: TranscriptState | undefined;
   if (transcript) {
     st = state.transcripts[transcript] ?? { offset: 0, turnsBefore: 0, updatedAt: '' };
-    let parsed = parseTranscript(agent, transcript, sessionId, st);
+    let parsed = parseTranscript(agent, transcript, sessionId, st, cfg.subagents);
     if (agent === 'claude' && event === 'Stop') {
       // The Stop event can arrive before the final model response reaches the transcript.
       const finalText = p.last_assistant_message?.trim();
@@ -238,7 +249,7 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
         const last = turn?.steps.at(-1);
         if (last?.kind === 'generation' && last.usage && (!finalText || turn?.output === finalText)) break;
         await wait(75);
-        parsed = parseTranscript(agent, transcript, sessionId, st);
+        parsed = parseTranscript(agent, transcript, sessionId, st, cfg.subagents);
       }
     }
     turns = parsed.turns;

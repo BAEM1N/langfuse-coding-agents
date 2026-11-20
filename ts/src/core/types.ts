@@ -51,6 +51,29 @@ export interface ToolResultEvidence {
   time?: string;
 }
 
+/**
+ * Work a sub-agent did while the turn was running (a Claude Code agent, or a
+ * Codex thread spawned by the turn). It has its own model calls and tools.
+ */
+export interface SubAgentRun {
+  /** Stable within the session (agent ID, or thread ID plus its turn ID). */
+  key: string;
+  /** Agent type or nickname. Never free text from the prompt. */
+  name: string;
+  startTime: string;
+  endTime: string;
+  input?: unknown;
+  output?: unknown;
+  complete: boolean;
+  /** Tool call of the owner (turn or parent run) that started this run, when known. */
+  parentToolKey?: string;
+  steps: Array<GenerationStep | ToolStep>;
+  events: TurnEvent[];
+  toolResults?: ToolResultEvidence[];
+  metadata: Record<string, unknown>;
+  children?: SubAgentRun[];
+}
+
 export interface Turn {
   /** Stable key within the session (prompt id / turn id). */
   key: string;
@@ -65,6 +88,8 @@ export interface Turn {
   steps: Array<GenerationStep | ToolStep>;
   events: TurnEvent[];
   toolResults?: ToolResultEvidence[];
+  /** Sub-agent runs started by this turn. */
+  children?: SubAgentRun[];
   metadata: Record<string, unknown>;
   /** Byte offset in the transcript where this turn starts (for incremental reads). */
   offset: number;

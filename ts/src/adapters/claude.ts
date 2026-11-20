@@ -58,6 +58,11 @@ interface TurnAcc {
 export interface ParseOptions {
   sessionId: string;
   turnsBefore: number;
+  /**
+   * Read a sub-agent transcript: every row is a sidechain row, and the whole
+   * file is one run that starts at its first user row.
+   */
+  sidechain?: boolean;
 }
 
 function isToolResultOnly(content: unknown): boolean {
@@ -131,10 +136,10 @@ export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions)
   let requestTime: string | undefined;
 
   for (const { offset, value: v } of entries) {
-    if (!v || typeof v !== 'object' || v.isSidechain) continue;
+    if (!v || typeof v !== 'object' || (v.isSidechain && !opts.sidechain)) continue;
     const ts: string | undefined = v.timestamp;
 
-    if (isBoundary(v)) {
+    if (opts.sidechain ? !cur && v.type === 'user' && !v.isMeta : isBoundary(v)) {
       requestTime = undefined;
       if (cur) cur.complete = true; // a newer prompt means the previous turn ended
       const prompt = promptOf(v.message?.content);

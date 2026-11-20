@@ -153,7 +153,8 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
     // counts them, so they are reported but not added to the input total.
     const cacheWriteReported = cacheWrite || count(net?.input_cache_write_tokens);
     const reasoning = count(net?.output_reasoning_tokens);
-    const operation = generation ? 'chat' : tool ? 'execute_tool' : 'invoke_agent';
+    // A plain span is a copy of a model call kept for viewing; it is not an agent invocation.
+    const operation = generation ? 'chat' : tool ? 'execute_tool' : event === 'agent-create' ? 'invoke_agent' : undefined;
     const nativeTraceId = otlpTraceId(body.traceId);
     const input = options.captureContent ? content(body.input, options.maxChars) : undefined;
     const output = options.captureContent ? content(body.output, options.maxChars) : undefined;
@@ -169,7 +170,7 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
     });
     return [{ traceId: nativeTraceId, spanId: otlpSpanId(body.id),
       ...(typeof body.parentObservationId === 'string' && observations.has(body.parentObservationId) ? { parentSpanId: otlpSpanId(body.parentObservationId) } : {}),
-      name: String(body.name ?? operation), kind: generation ? 3 : 1, startTimeUnixNano: epoch(start), endTimeUnixNano: epoch(end),
+      name: String(body.name ?? operation ?? 'span'), kind: generation ? 3 : 1, startTimeUnixNano: epoch(start), endTimeUnixNano: epoch(end),
       status: { code: body.level === 'ERROR' ? 2 : 0 }, links,
       attributes: attributes({ 'gen_ai.operation.name': operation, 'gen_ai.agent.name': agent,
         'user.id': generation || tool ? undefined : trace?.userId,

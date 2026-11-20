@@ -205,14 +205,42 @@ turns whose transcript has been idle for `LANGFUSE_HOOK_STALE_TURN_MINUTES`
 (default 60) are closed and sent with `endedWithoutStop: true` in the trace
 metadata. If the turn later continues, the new spans are sent as usual.
 
+## Sub-agents
+
+Sub-agent work is not in the transcript a hook receives, so the hooks read it
+from where each agent writes it.
+
+| Agent | Source | Linked by |
+|---|---|---|
+| Claude Code | `<session>/subagents/agent-<id>.jsonl` and `.meta.json` next to the session transcript | `toolUseId` in the meta file: the tool call that started the agent |
+| Codex | the spawned thread's own rollout under `~/.codex/sessions` (Codex runs no hooks for it) | `session_id` in its `session_meta`, and `turn_attribution.parent_turn_id` on each of its turns |
+
+Each run appears twice, and its tokens are counted once.
+
+- **Inside the turn's trace**: an agent span `Subagent: <type or nickname>` with
+  its model calls and tools beneath it. For Claude Code it sits under the tool
+  call that started it; for Codex under the turn. Usage is recorded here, so a
+  turn's total includes its sub-agents.
+- **As a trace of its own**, tagged `subagent` in the same session, named
+  `<Agent> - Subagent: <type>`. Its model calls are plain spans with the usage in
+  metadata (`usageCountedOnTurnTrace: true`), so project and session totals do
+  not double. `parentTraceId` on it and `subagentTraceId` on the span in the
+  turn point at each other.
+
+A forked Codex thread starts with a copy of its parent's history; rows before
+`subagent_history_start_ordinal` are skipped. Do not backfill a thread rollout by
+itself: backfill the parent rollout, which brings its threads with it.
+
+`CODING_AGENT_SUBAGENT_TRACES=false` keeps only the spans inside the turn.
+`CODING_AGENT_SUBAGENTS=false` turns sub-agent reading off.
+
 ## What is not captured
 
 Check these before reading totals as complete.
 
 | Gap | Effect | What to do |
 |---|---|---|
-| Claude Code sub-agents | Their model calls and tools are in separate transcript files the hook does not read, so their tokens are missing | Count them from `<session>/subagents/*.jsonl` if you need totals |
-| Codex sub-agent threads | Codex runs no hooks for spawned threads; their rollouts are not sent | Same: the rollouts are under `~/.codex/sessions` |
+| Sub-agents that finish after the turn | A background agent still running at Stop is sent when the next hook for that session runs | Run another turn, or backfill the transcript |
 | Sessions where hooks do not run | Headless or benchmark runs with another config directory, or hooks disabled, leave no trace | `doctor` shows which hooks are registered; compare session counts |
 | OMP turns that never finish | The extension sends on `agent_end`; an aborted turn is sent only if it completed | — |
 | Cost | Langfuse prices a model call only if the project has a model definition matching the model name | Add model definitions in Langfuse for the models you use |

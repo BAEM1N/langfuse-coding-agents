@@ -33,6 +33,10 @@ export interface Config {
    * treated as ended (interrupted, or the session was closed). 0 disables.
    */
   staleTurnMs: number;
+  /** Read sub-agent transcripts and attach their work to the turn that started them. */
+  subagents: boolean;
+  /** Also send each sub-agent run as a trace of its own (without usage, to avoid double counting). */
+  subagentTraces: boolean;
   /** False only when LANGFUSE_HOOK_CAPTURE_CONTENT=false; applies to the direct OTLP route. */
   langfuseCaptureContent: boolean;
   /** Declares that the generic OTLP endpoint is a Collector that also forwards to Langfuse. */
@@ -127,6 +131,8 @@ export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = proce
     agentHome: home,
     langfuseTransport: transport === 'otlp' ? 'otlp' : 'legacy',
     transportError: knownTransport ? undefined : 'LANGFUSE_HOOK_TRANSPORT must be legacy or otlp',
+    subagents: (pick(env, 'CODING_AGENT_SUBAGENTS') ?? '').toLowerCase() !== 'false',
+    subagentTraces: (pick(env, 'CODING_AGENT_SUBAGENT_TRACES') ?? '').toLowerCase() !== 'false',
     staleTurnMs: (() => {
       const minutes = Number(pick(env, 'LANGFUSE_HOOK_STALE_TURN_MINUTES') ?? '60');
       return Number.isFinite(minutes) && minutes >= 0 ? minutes * 60_000 : 60 * 60_000;
