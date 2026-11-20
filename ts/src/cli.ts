@@ -9,7 +9,7 @@
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
 //   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL] [--reconcile]
 //   node src/cli.ts coverage <claude|codex> [--since ISO] [--until ISO] [--deep N]
-//   node src/cli.ts selftest [claude|codex|omp|all] [--keep]   (sends a synthetic turn to the project, checks it, deletes it)
+//   node src/cli.ts selftest [claude|codex|omp|copilot|opencode|all] [--keep]   (sends a synthetic turn to the project, checks it, deletes it)
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> --from ISO --to ISO [--session ID] [--dry-run]
 
@@ -294,9 +294,9 @@ async function cmdCoverage(agent: string | undefined, args: string[]): Promise<v
  */
 async function cmdSelfTest(agent: string | undefined, args: string[]): Promise<void> {
   const target = agent && !agent.startsWith('--') ? agent : 'claude';
-  const formats = target === 'all' ? ['claude', 'codex', 'omp'] as const
-    : target === 'claude' || target === 'codex' || target === 'omp' ? [target] as const : undefined;
-  if (!formats) throw new Error('selftest expects claude, codex, omp or all');
+  const known = ['claude', 'codex', 'omp', 'copilot', 'opencode'] as const;
+  const formats = target === 'all' ? known : known.filter((name) => name === target);
+  if (!formats.length) throw new Error('selftest expects claude, codex, omp, copilot, opencode or all');
   for (const format of formats) {
     // Keys come from that agent's own settings, as they do when its integration runs.
     const cfg = loadConfig(format, { ...process.env });

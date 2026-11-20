@@ -1,6 +1,6 @@
 import { setTimeout as wait } from 'node:timers/promises';
 import { readJsonlFrom, type JsonlEntry } from '../core/jsonl.ts';
-import type { ToolStep, Turn, Usage } from '../core/types.ts';
+import type { SubAgentRun, ToolStep, Turn, Usage } from '../core/types.ts';
 
 export async function readCopilotTurn(path: string, sessionId: string, stoppedAt: string): Promise<Turn | undefined> {
   // agentStop can run before the final response and usage reach the transcript.
@@ -26,23 +26,64 @@ function usageOf(source: Record<string, unknown> | undefined): Usage | undefined
     input_cached_tokens: read, input_cache_creation: write, total: source.inputTokens + source.outputTokens };
 }
 
-/** Read the latest main-agent interaction from Copilot CLI's native event log. */
+/**
+ * Read the latest main-agent interaction from Copilot CLI's native event log.
+ * A sub-agent (the task tool, a custom agent) writes its events to the same
+ * log with an `agentId` on the envelope; those are read as runs of their own
+ * and attached to the tool call named by `subagent.started`.
+ */
 export function parseCopilotTurn(entries: JsonlEntry[], sessionId: string, stoppedAt: string): Turn | undefined {
+  const main = entries.filter(entry => !entry.value?.agentId);
   const isUser = (entry: JsonlEntry) => entry.value?.type === 'user.message' && entry.value.data?.hasSubmittedTask !== false;
-  const userIndex = entries.findLastIndex(isUser);
+  const userIndex = main.findLastIndex(isUser);
   if (userIndex < 0) return;
-  const user = entries[userIndex].value;
+  const user = main[userIndex].value;
   if (typeof user.timestamp !== 'string' || typeof user.data?.messageId !== 'string') return;
   const interaction = user.data.interactionId;
-  const turn: Turn = { key: user.data.messageId, index: entries.slice(0, userIndex + 1).filter(isUser).length,
-    sessionId, startTime: user.timestamp, endTime: stoppedAt, offset: entries[userIndex].offset,
+  const turn: Turn = { key: user.data.messageId, index: main.slice(0, userIndex + 1).filter(isUser).length,
+    sessionId, startTime: user.timestamp, endTime: stoppedAt, offset: main[userIndex].offset,
     input: user.data.content, complete: true, steps: [], toolResults: [], events: [], metadata: { agent: 'copilot' } };
-  const records = entries.slice(userIndex + 1).map(entry => entry.value);
+  const after = entries.slice(entries.indexOf(main[userIndex]) + 1).map(entry => entry.value);
   const usages = new Map<string, Record<string, unknown>>();
-  for (const record of records) {
+  for (const record of after) {
     const usage = record?.data?.usage;
     if (record?.type === 'session.usage_record' && typeof usage?.apiCallId === 'string') usages.set(usage.apiCallId, usage);
   }
+  const mainSteps = readSteps(after.filter(record => !record?.agentId), usages, user.data.transformedContent ?? user.data.content, interaction);
+  turn.steps = mainSteps.steps;
+  turn.toolResults = mainSteps.toolResults;
+  turn.output = mainSteps.output;
+
+  // Sub-agent runs started during this interaction.
+  const byAgent = new Map<string, any[]>();
+  for (const record of after) {
+    if (typeof record?.agentId !== 'string') continue;
+    const list = byAgent.get(record.agentId);
+    if (list) list.push(record); else byAgent.set(record.agentId, [record]);
+  }
+  for (const [agentId, records] of byAgent) {
+    const started = records.find(record => record.type === 'subagent.started');
+    if (!started || typeof started.data?.toolCallId !== 'string') continue;
+    const ended = records.find(record => record.type === 'subagent.completed' || record.type === 'subagent.failed');
+    const prompt = records.find(record => record.type === 'user.message')?.data?.content;
+    const run = readSteps(records, usages, prompt, undefined);
+    const name = typeof started.data.agentName === 'string' && started.data.agentName ? started.data.agentName : 'agent';
+    const child: SubAgentRun = { key: agentId, name, startTime: started.timestamp, endTime: ended?.timestamp ?? records.at(-1)?.timestamp ?? started.timestamp,
+      input: prompt, output: run.output, complete: Boolean(ended), parentToolKey: started.data.toolCallId, steps: run.steps,
+      toolResults: run.toolResults, events: [], metadata: { agentType: name, model: started.data.model, executionMode: started.data.executionMode,
+        reportedTotalTokens: ended?.data?.totalTokens, reportedToolCalls: ended?.data?.totalToolCalls } };
+    if (ended?.type === 'subagent.failed') {
+      child.events.push({ key: 'failed-' + agentId, name: 'Subagent failed', time: ended.timestamp, level: 'ERROR', input: ended.data?.error });
+    }
+    (turn.children ??= []).push(child);
+  }
+  return turn.steps.length ? turn : undefined;
+}
+
+/** Model calls and tools of one agent, in log order. */
+function readSteps(records: any[], usages: Map<string, Record<string, unknown>>, firstInput: unknown, interaction: unknown) {
+  const turn: Pick<Turn, 'steps' | 'toolResults' | 'output'> = { steps: [], toolResults: [] };
+  const user = { data: { content: firstInput, transformedContent: firstInput } };
   const starts = new Map<unknown, string>();
   const requested = new Set<string>();
   const tools = new Map<string, ToolStep>();
@@ -88,5 +129,5 @@ export function parseCopilotTurn(entries: JsonlEntry[], sessionId: string, stopp
       }
     }
   }
-  return turn.steps.length ? turn : undefined;
+  return turn;
 }

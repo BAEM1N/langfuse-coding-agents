@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +17,7 @@ import { runHook } from './run.ts';
 // agent's own state is not touched.
 
 const ENVIRONMENT = 'hook-selftest';
-export type SelfTestFormat = 'claude' | 'codex' | 'omp';
+export type SelfTestFormat = 'claude' | 'codex' | 'omp' | 'copilot' | 'opencode';
 
 interface StoredObservation {
   id: string;
@@ -41,6 +42,11 @@ interface Scenario {
   agentTokens: number;
   environment: Record<string, string>;
   send(): Promise<string[] | undefined>;
+  /**
+   * OpenCode keeps a sub-agent's turns as traces of their own in the parent's
+   * session instead of nesting them. Gives the two trace IDs to compare.
+   */
+  separate?: { turn: string; subagent: string };
   /** Checks only this format can make. */
   extra?(turn: StoredTrace, check: (name: string, ok: boolean, detail?: string) => void): void;
 }
@@ -196,6 +202,100 @@ function ompScenario(dir: string, session: string): Scenario {
     } };
 }
 
+function copilotScenario(dir: string, session: string): Scenario {
+  const start = Date.now() - 120_000;
+  let n = 0;
+  const row = (ms: number, type: string, data: object, agentId?: string) => ({ id: 'e' + n++, timestamp: new Date(start + ms).toISOString(), type, data,
+    ...(agentId ? { agentId } : {}) });
+  const usage = (apiCallId: string, inputTokens: number, outputTokens: number, cacheReadTokens = 0) => ({ usage: { apiCallId, inputTokens, outputTokens, cacheReadTokens } });
+  const agent = 'selftest-agent-1';
+  const transcript = join(dir, 'events.jsonl');
+  writeFileSync(transcript, lines([
+    row(0, 'user.message', { messageId: 'um', content: 'Self-test prompt (synthetic)', interactionId: 'i1' }),
+    row(100, 'assistant.turn_start', { turnId: '0', interactionId: 'i1' }),
+    row(900, 'session.usage_record', usage('c1', 100, 10, 40)),
+    row(900, 'assistant.message', { messageId: 'm1', turnId: '0', apiCallId: 'c1', model: 'copilot-selftest', providerId: 'selftest',
+      toolRequests: [{ toolCallId: 'call_task', name: 'task', arguments: { agent_type: 'selftest-agent' } }] }),
+    row(950, 'tool.execution_start', { toolCallId: 'call_task', toolName: 'task', arguments: { agent_type: 'selftest-agent' } }),
+    row(1000, 'subagent.started', { toolCallId: 'call_task', agentName: 'selftest-agent', agentDisplayName: 'Self test', model: 'copilot-selftest' }, agent),
+    row(1010, 'user.message', { messageId: 'sum', content: 'Synthetic sub-agent prompt' }, agent),
+    row(1020, 'assistant.turn_start', { turnId: '0', parentToolCallId: 'call_task' }, agent),
+    row(1800, 'session.usage_record', usage('s1', 50, 5), agent),
+    row(1800, 'assistant.message', { messageId: 'sm1', turnId: '0', apiCallId: 's1', model: 'copilot-selftest', providerId: 'selftest',
+      toolRequests: [{ toolCallId: 'call_view', name: 'view', arguments: { path: 'synthetic.txt' } }] }, agent),
+    row(1850, 'tool.execution_start', { toolCallId: 'call_view', toolName: 'view', arguments: { path: 'synthetic.txt' } }, agent),
+    row(2200, 'tool.execution_complete', { toolCallId: 'call_view', success: true, result: { content: 'synthetic' } }, agent),
+    row(2250, 'assistant.turn_start', { turnId: '1', parentToolCallId: 'call_task' }, agent),
+    row(3000, 'session.usage_record', usage('s2', 60, 6), agent),
+    row(3000, 'assistant.message', { messageId: 'sm2', turnId: '1', apiCallId: 's2', model: 'copilot-selftest', providerId: 'selftest', content: 'Synthetic sub-agent answer' }, agent),
+    row(3050, 'subagent.completed', { toolCallId: 'call_task', agentName: 'selftest-agent', totalTokens: 121, totalToolCalls: 1 }, agent),
+    row(3100, 'tool.execution_complete', { toolCallId: 'call_task', success: true, result: { content: 'Synthetic sub-agent answer' } }),
+    row(3150, 'assistant.turn_start', { turnId: '1', interactionId: 'i1' }),
+    row(4000, 'session.usage_record', usage('c2', 120, 12, 60)),
+    row(4000, 'assistant.message', { messageId: 'm2', turnId: '1', apiCallId: 'c2', model: 'copilot-selftest', providerId: 'selftest', content: 'Self-test complete (synthetic)' }),
+  ]));
+  return { tag: 'copilot', turnKey: 'um', runKey: agent, ownerTool: 'task', subagent: 'selftest-agent',
+    turnTypes: 'AGENT,AGENT,GENERATION,GENERATION,GENERATION,GENERATION,TOOL,TOOL', innerTypes: 'GENERATION,GENERATION,TOOL',
+    mainTokens: 110 + 132, agentTokens: 55 + 66, environment: { COPILOT_HOME: join(dir, 'home') },
+    async send() {
+      // What the agentStop hook command does with the session's event log.
+      const { readCopilotTurn } = await import('../adapters/copilot.ts');
+      const { turnToEvents } = await import('./batch.ts');
+      const { loadConfig } = await import('./config.ts');
+      const { exportEvents } = await import('./export.ts');
+      const { batchOptions } = await import('./run.ts');
+      const config = loadConfig('copilot');
+      const turn = await readCopilotTurn(transcript, session, new Date(start + 4100).toISOString());
+      if (!turn) return ['no turn could be read'];
+      const sent = await exportEvents(config, turnToEvents(turn, batchOptions(config)), nullLogger);
+      return sent.destinations.find(destination => destination.kind === 'langfuse-otlp')?.traces
+        .map(trace => `${trace.status}${trace.httpStatus ? ' HTTP ' + trace.httpStatus : ''}${trace.message ? ' ' + trace.message : ''}`);
+    },
+    extra(turn, check) {
+      const cached = turn.observations.find(observation => observation.usageDetails?.input_cached_tokens === 40);
+      check('cached input kept as a separate part', cached?.usageDetails?.input === 60 && cached.usageDetails.total === 110, JSON.stringify(cached?.usageDetails));
+    } };
+}
+
+function opencodeScenario(dir: string, session: string): Scenario {
+  const start = Date.now() - 120_000;
+  const at = (ms: number) => new Date(start + ms).toISOString();
+  // The event arrays the OpenCode plugin's hook builds for a finished turn:
+  // one for the main session, one for the session its task tool started.
+  const turnEvents = (id: string, subagent: boolean, offset: number) => {
+    const root = id.slice(0, 16) + 'root';
+    const generation = id.slice(0, 16) + 'gen1';
+    const metadata = subagent ? { source: 'opencode', generationCount: 1, subagent: true, subagentSessionId: session + '-child', parentSessionId: session }
+      : { source: 'opencode', generationCount: 1 };
+    return [
+      { id: id + '-t', timestamp: at(offset), type: 'trace-create', body: { id, name: `OpenCode ${subagent ? 'subagent ' : ''}turn selftest`, sessionId: session,
+        userId: 'hook-selftest', timestamp: at(offset), environment: ENVIRONMENT, input: 'Self-test prompt (synthetic)', output: 'Self-test complete (synthetic)',
+        tags: ['opencode', 'selftest-host', ...(subagent ? ['subagent'] : [])], metadata } },
+      { id: id + '-a', timestamp: at(offset), type: 'agent-create', body: { id: root, traceId: id, name: subagent ? 'OpenCode subagent' : 'OpenCode',
+        startTime: at(offset), endTime: at(offset + 1000), input: 'Self-test prompt (synthetic)', output: 'Self-test complete (synthetic)' } },
+      { id: id + '-g', timestamp: at(offset), type: 'generation-create', body: { id: generation, traceId: id, parentObservationId: root, name: 'opencode-selftest',
+        model: 'opencode-selftest', startTime: at(offset + 100), endTime: at(offset + 900), input: [{ role: 'user', content: 'Self-test prompt (synthetic)' }],
+        output: { text: 'Self-test complete (synthetic)', toolCalls: [] },
+        usageDetails: { input: 40, output: 6, total: 49, output_reasoning_tokens: 3, input_cached_tokens: 20, input_cache_creation: 0 },
+        metadata: { provider: 'selftest', finish: 'stop' } } },
+    ];
+  };
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 32);
+  const main = digest('opencode-selftest-main-' + session);
+  const child = digest('opencode-selftest-child-' + session);
+  return { tag: 'opencode', turnKey: '', runKey: '', ownerTool: '', subagent: '', turnTypes: 'AGENT,GENERATION', innerTypes: '', mainTokens: 49, agentTokens: 49,
+    environment: {}, separate: { turn: main, subagent: child },
+    async send() {
+      // What `export-events opencode` does with the array the plugin hands over.
+      const { loadConfig } = await import('./config.ts');
+      const { exportEvents } = await import('./export.ts');
+      const sent = await exportEvents(loadConfig('opencode'), [...turnEvents(main, false, 0), ...turnEvents(child, true, 2000)], nullLogger, undefined,
+        { stateDir: join(dir, 'delivery') });
+      return sent.destinations.find(destination => destination.kind === 'langfuse-otlp')?.traces
+        .map(trace => `${trace.status}${trace.httpStatus ? ' HTTP ' + trace.httpStatus : ''}${trace.message ? ' ' + trace.message : ''}`);
+    } };
+}
+
 async function readBack(client: LangfuseClient, api: 'v2' | 'legacy', traceId: string): Promise<StoredTrace | undefined> {
   if (api === 'legacy') {
     try {
@@ -228,7 +328,8 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
   const format = options.format ?? 'claude';
   const session = `hook-selftest-${format}-${Date.now()}`;
   const dir = mkdtempSync(join(tmpdir(), 'langfuse-hooks-selftest-'));
-  const scenario = format === 'codex' ? codexScenario(dir, session) : format === 'omp' ? ompScenario(dir, session) : claudeScenario(dir, session);
+  const scenario = format === 'codex' ? codexScenario(dir, session) : format === 'omp' ? ompScenario(dir, session)
+    : format === 'copilot' ? copilotScenario(dir, session) : format === 'opencode' ? opencodeScenario(dir, session) : claudeScenario(dir, session);
 
   // The integration reads its settings from the environment. Point it at a
   // throwaway home so the real read positions and delivery records stay as they are.
@@ -242,8 +343,8 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
   Object.assign(process.env, settings);
   const checks: Array<{ check: string; ok: boolean; detail?: string }> = [];
   const check = (name: string, ok: boolean, detail?: string) => { checks.push({ check: name, ok, detail: ok ? undefined : detail }); };
-  const turnId = traceIdFor(scenario.tag, session, scenario.turnKey);
-  const runId = subagentTraceIdFor(scenario.tag, session, scenario.runKey);
+  const turnId = scenario.separate?.turn ?? traceIdFor(scenario.tag, session, scenario.turnKey);
+  const runId = scenario.separate?.subagent ?? subagentTraceIdFor(scenario.tag, session, scenario.runKey);
   const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
     timeoutMs: Math.max(cfg.timeoutMs, 30000), logger: nullLogger });
   let api: 'v2' | 'legacy' | undefined = options.api;
@@ -267,7 +368,22 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
 
     check('turn trace stored', Boolean(turn), 'not found by trace ID ' + turnId);
     check('sub-agent trace stored', Boolean(run), 'not found by trace ID ' + runId);
-    if (turn) {
+    if (scenario.separate) {
+      // Side by side in one session, not nested: check each trace and what tells them apart.
+      const total = (trace?: StoredTrace) => (trace?.observations ?? []).reduce((sum, observation) => sum + (observation.usageDetails?.total ?? 0), 0);
+      const kinds = (trace?: StoredTrace) => (trace?.observations ?? []).map(observation => observation.type).sort().join(',');
+      check('main turn: root agent and model call', kinds(turn) === scenario.turnTypes, kinds(turn));
+      check('sub-agent turn: root agent and model call', kinds(run) === scenario.turnTypes, kinds(run));
+      check('both turns in the session that started the sub-agent', turn?.sessionId === session && run?.sessionId === session,
+        JSON.stringify({ main: turn?.sessionId, subagent: run?.sessionId }));
+      check('sub-agent turn tagged, and pointing at its parent session', (run?.tags ?? []).includes('subagent') && !(turn?.tags ?? []).includes('subagent')
+        && run?.metadata?.parentSessionId === session, JSON.stringify({ tags: run?.tags, parentSessionId: run?.metadata?.parentSessionId }));
+      check(`tokens counted once in each turn (${scenario.mainTokens} and ${scenario.agentTokens})`, total(turn) === scenario.mainTokens && total(run) === scenario.agentTokens,
+        `${total(turn)} and ${total(run)}`);
+      const usage = run?.observations.find(observation => observation.type === 'GENERATION')?.usageDetails;
+      check('reasoning and cached tokens kept as separate parts', usage?.output_reasoning_tokens === 3 && usage.input_cached_tokens === 20 && usage.input === 40,
+        JSON.stringify(usage));
+    } else if (turn) {
       const observations = turn.observations;
       const byId = new Map(observations.map(observation => [observation.id, observation]));
       const types = (list: StoredObservation[]) => list.map(observation => observation.type).sort().join(',');
@@ -290,7 +406,7 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
       check('link from the turn to the sub-agent trace', agent?.metadata?.subagentTraceId === runId, String(agent?.metadata?.subagentTraceId));
       scenario.extra?.(turn, check);
     }
-    if (run) {
+    if (run && !scenario.separate) {
       const usage = run.observations.filter(observation => observation.usageDetails && Object.keys(observation.usageDetails).length);
       check('sub-agent trace carries no usage of its own', usage.length === 0, usage.length + ' observation(s) with usage');
       check('sub-agent trace: session, tag and link back', run.sessionId === session && (run.tags ?? []).includes('subagent')
