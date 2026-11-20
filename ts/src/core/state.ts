@@ -9,6 +9,10 @@ export interface TranscriptState {
   /** Agent-specific context that is only written at the top of the file. */
   context?: Record<string, unknown>;
   updatedAt: string;
+  /** Session the transcript belongs to, so it can be read again without a hook payload. */
+  sessionId?: string;
+  /** The last turn had not ended when the transcript was last read. */
+  open?: boolean;
 }
 
 export interface StateFile {

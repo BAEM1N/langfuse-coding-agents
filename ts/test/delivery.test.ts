@@ -34,7 +34,7 @@ const SETTINGS = ['TRACE_TO_LANGFUSE', 'LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_K
   'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT', 'OTEL_EXPORTER_OTLP_HEADERS', 'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
   'OTEL_EXPORTER_OTLP_PROTOCOL', 'OTEL_EXPORTER_OTLP_TRACES_PROTOCOL', 'OTEL_EXPORTER_OTLP_TIMEOUT',
   'OTEL_EXPORTER_OTLP_TRACES_TIMEOUT', 'OTEL_CAPTURE_CONTENT', 'OTEL_SERVICE_NAME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
-  'LANGFUSE_AGENT_HOOKS_CONFIG_DIR'];
+  'LANGFUSE_AGENT_HOOKS_CONFIG_DIR', 'LANGFUSE_HOOK_STALE_TURN_MINUTES'];
 
 interface Seen { path: string; headers: IncomingHttpHeaders; body: any }
 type Reply = { status?: number; body?: string; delayMs?: number } | void;
@@ -478,4 +478,67 @@ test('destination identifiers carry no credentials, and transport is never switc
   assert.notEqual(legacy.id, other.id, 'legacy and OTLP delivery are tracked separately');
   const [invalid] = resolveDestinations(loadConfig('claude', env({ LANGFUSE_HOOK_TRANSPORT: 'grpc' })));
   assert.match(invalid.configError ?? '', /legacy or otlp/);
+});
+
+test('the Langfuse route keeps what legacy ingestion carried: events, metadata and the body limit', async (t) => {
+  const lf = await receiver(t);
+  const tempo = await receiver(t);
+  const box = sandbox(t, langfuse(lf.url, { CODING_AGENT_OTLP_TRACES_ENDPOINT: tempo.url + '/v1/traces', OTEL_CAPTURE_CONTENT: 'true' }));
+  const rows = fixture('claude-transcript.jsonl').slice(0, 8).map(line => JSON.parse(line));
+  rows[1].message.content = 'P'.repeat(15000); // longer than the 8000 default, shorter than the 20000 legacy limit
+  writeFileSync(box.transcript, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+  await stop('claude', box.transcript);
+  const sent = spansOf(lf.requests[0]);
+  const root = sent.find(span => !span.parentSpanId);
+  const model = sent.find(span => attr(span, 'langfuse.observation.type') === 'generation');
+  assert.ok(attr(root, 'langfuse.observation.input').includes('P'.repeat(15000)), 'same per-string limit as legacy ingestion');
+  assert.equal(attr(model, 'langfuse.observation.metadata.stopReason'), 'tool_use');
+  assert.equal(attr(model, 'langfuse.observation.metadata.requestId'), rows[2].requestId ?? rows[3].requestId);
+  for (const span of sent) assert.equal(attr(span, 'langfuse.trace.metadata.promptSource'), 'typed', 'turn metadata on every span');
+
+  const elsewhere = spansOf(tempo.requests[0]);
+  assert.ok(!attr(elsewhere.find(span => !span.parentSpanId), 'coding_agent.input').includes('P'.repeat(8001)), 'other receivers keep the 8000 limit');
+  assert.ok(elsewhere.every(span => attr(span, 'langfuse.trace.metadata.promptSource') === undefined
+    && attr(span, 'langfuse.observation.metadata.stopReason') === undefined), 'adapter metadata is not widened to other receivers');
+
+  // An idle notification after the turn ended: one new event observation, nothing repeated.
+  await runHook('claude', { hook_event_name: 'Notification', session_id: 's', transcript_path: box.transcript,
+    notification_type: 'idle_prompt', message: 'waiting for input' });
+  assert.equal(lf.requests.length, 2);
+  const [event] = spansOf(lf.requests[1]);
+  assert.equal(spansOf(lf.requests[1]).length, 1);
+  assert.equal(attr(event, 'langfuse.observation.type'), 'event');
+  assert.equal(event.name, 'Notification: idle_prompt');
+  assert.equal(event.parentSpanId, root.spanId);
+  assert.equal(event.startTimeUnixNano, event.endTimeUnixNano);
+  assert.match(attr(event, 'langfuse.observation.input'), /waiting for input/);
+  assert.equal(attr(event, 'langfuse.session.id'), 'sess-1');
+  assert.equal(tempo.requests.length, 1, 'no event span for a receiver that shows span events');
+});
+
+test('a turn left without a Stop event is closed and sent once its transcript has been idle', async (t) => {
+  const lf = await receiver(t);
+  const box = sandbox(t, langfuse(lf.url, { LANGFUSE_HOOK_STALE_TURN_MINUTES: '0.002' })); // 120 ms
+  const rows = fixture('claude-transcript.jsonl');
+  const abandoned = join(box.home, 'abandoned.jsonl');
+  // The session stops after a tool result: no final model call, no end-of-turn marker, no Stop.
+  writeFileSync(abandoned, rows.slice(0, 5).join('\n') + '\n');
+  const first = await runHook('claude', { hook_event_name: 'Notification', session_id: 'sess-1', transcript_path: abandoned, message: 'needs permission' });
+  assert.deepEqual(statuses(first, 'langfuse-otlp'), ['not-ready']);
+  assert.equal(lf.requests.length, 0, 'an unfinished turn is not sent to a receiver that cannot update it');
+
+  await new Promise(resolve => setTimeout(resolve, 300));
+  // Any later hook for another session picks it up.
+  writeFileSync(box.transcript, rows.slice(0, 8).join('\n').replaceAll('sess-1', 'sess-2') + '\n');
+  await stop('claude', box.transcript, 'sess-2');
+  assert.equal(lf.requests.length, 2);
+  const closed = lf.requests.map(spansOf).find(spans => attr(spans[0], 'langfuse.session.id') === 'sess-1')!;
+  assert.ok(closed, 'the abandoned turn was sent');
+  assert.ok(closed.every(span => attr(span, 'langfuse.trace.metadata.endedWithoutStop') === true
+    && attr(span, 'langfuse.trace.metadata.complete') === true), 'and is marked as closed without a Stop');
+  assert.equal(attr(closed.find(span => !span.parentSpanId), 'langfuse.trace.name'), 'Claude Code - Turn 1');
+
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await stop('claude', box.transcript, 'sess-2');
+  assert.equal(lf.requests.length, 2, 'closed once: nothing is sent again');
 });

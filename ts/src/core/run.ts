@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { findCodexRollout, parseCodexRollout, type CodexContext } from '../adapters/codex.ts';
@@ -134,6 +134,70 @@ function fallbackTurn(p: HookPayload, sessionId: string): Turn | undefined {
   };
 }
 
+/**
+ * The read position only says where the next parse starts. Whether a turn
+ * reached a destination is tracked per destination in the delivery state, so
+ * the position stops at the first turn some destination still needs. The last
+ * turn is always read again: its final response can land late.
+ */
+function savePosition(statePath: string, transcript: string, turns: Turn[], settledIds: string[], opts: BatchOptions,
+  context: Record<string, unknown> | undefined, sessionId: string): void {
+  const settled = new Set(settledIds);
+  const last = turns[turns.length - 1];
+  const resume = turns.find((t) => !t.complete || !settled.has(traceIdFor(opts.agentTag, t.sessionId, t.key))) ?? last;
+  const latest = loadState(statePath); // another session may have saved meanwhile
+  latest.transcripts[transcript] = {
+    offset: resume.offset,
+    turnsBefore: Math.max(0, resume.index - 1),
+    context,
+    updatedAt: new Date().toISOString(),
+    sessionId,
+    // Also open while the last turn is still owed to a destination, so it is
+    // retried even if this session never runs another hook.
+    open: !last.complete || !settled.has(traceIdFor(opts.agentTag, last.sessionId, last.key)),
+  };
+  saveState(statePath, latest);
+}
+
+const MAX_STALE_PER_RUN = 2;
+
+/**
+ * A turn that was interrupted, or whose session was closed, never gets a Stop
+ * event, and no later hook runs for that transcript. Legacy ingestion left it
+ * named "(in progress)" forever; destinations that only take finished turns
+ * would never receive it. When another hook runs, close turns whose transcript
+ * has been idle for the configured time and send them, marked as such.
+ */
+async function closeStaleTurns(agent: AgentName, cfg: Config, statePath: string, current: string | undefined,
+  opts: BatchOptions, log: Logger): Promise<void> {
+  if (!cfg.staleTurnMs) return;
+  const now = Date.now();
+  let handled = 0;
+  for (const [path, st] of Object.entries(loadState(statePath).transcripts)) {
+    if (handled >= MAX_STALE_PER_RUN) break;
+    if (path === current || !st.open || !st.sessionId || now - Date.parse(st.updatedAt) < cfg.staleTurnMs) continue;
+    let idleFor: number | undefined;
+    try { idleFor = now - statSync(path).mtimeMs; } catch { /* transcript is gone */ }
+    if (idleFor !== undefined && idleFor < cfg.staleTurnMs) continue;
+    handled++;
+    const parsed = idleFor === undefined ? undefined : parseTranscript(agent, path, st.sessionId, st);
+    const last = parsed?.turns.at(-1);
+    if (!parsed || !last) {
+      const latest = loadState(statePath);
+      if (latest.transcripts[path]) { latest.transcripts[path].open = false; saveState(statePath, latest); }
+      continue;
+    }
+    if (!last.complete) {
+      last.complete = true;
+      last.metadata = { ...last.metadata, endedWithoutStop: true };
+    }
+    // GitHub context describes the checkout this hook runs in, not that session's.
+    const res = await exportEvents({ ...cfg, github: undefined }, parsed.turns.flatMap((t) => turnToEvents(t, opts)), log);
+    savePosition(statePath, path, parsed.turns, res.settled, opts, parsed.context ?? st.context, st.sessionId);
+    log.info(`closed a turn idle for ${Math.round(idleFor! / 60000)} min without a Stop event (session=${st.sessionId})`);
+  }
+}
+
 export interface HookResult {
   skipped?: string;
   turns?: number;
@@ -193,22 +257,11 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
   const started = Date.now();
   const res = await exportEvents(cfg, events, log, p.cwd);
 
-  if (transcript && st) {
-    // The read position only says where the next parse starts. Whether a turn
-    // reached a destination is tracked per destination in the delivery state,
-    // so the position stops at the first turn some destination still needs.
-    // The last turn is always read again: its final response can land late.
-    const settled = new Set(res.settled);
-    const resume = turns.find((t) => !t.complete || !settled.has(traceIdFor(opts.agentTag, t.sessionId, t.key)))
-      ?? turns[turns.length - 1];
-    const latest = loadState(statePath); // another session may have saved meanwhile
-    latest.transcripts[transcript] = {
-      offset: resume.offset,
-      turnsBefore: Math.max(0, resume.index - 1),
-      context: context ?? st.context,
-      updatedAt: new Date().toISOString(),
-    };
-    saveState(statePath, latest);
+  if (transcript && st) savePosition(statePath, transcript, turns, res.settled, opts, context ?? st.context, sessionId);
+  try {
+    await closeStaleTurns(agent, cfg, statePath, transcript, opts, log);
+  } catch (e) {
+    log.debug(`stale turn check failed: ${(e as Error).message}`);
   }
   if (!res.ok) {
     log.error(`${event}: export incomplete (${res.errors.length} problem(s), session=${sessionId})`);

@@ -198,6 +198,26 @@ A final response that reaches the transcript after the Stop event is sent as a
 new span on the next hook run. A span that changed after it was accepted cannot
 be updated in Langfuse v4; `delivery <agent>` lists it under `changed-after`.
 
+A turn that is interrupted, or whose session is closed, gets no Stop event. Legacy
+ingestion left such a turn named "(in progress)"; a receiver that only takes
+finished turns would never get it. When any later hook runs for the same agent,
+turns whose transcript has been idle for `LANGFUSE_HOOK_STALE_TURN_MINUTES`
+(default 60) are closed and sent with `endedWithoutStop: true` in the trace
+metadata. If the turn later continues, the new spans are sent as usual.
+
+## What is not captured
+
+Check these before reading totals as complete.
+
+| Gap | Effect | What to do |
+|---|---|---|
+| Claude Code sub-agents | Their model calls and tools are in separate transcript files the hook does not read, so their tokens are missing | Count them from `<session>/subagents/*.jsonl` if you need totals |
+| Codex sub-agent threads | Codex runs no hooks for spawned threads; their rollouts are not sent | Same: the rollouts are under `~/.codex/sessions` |
+| Sessions where hooks do not run | Headless or benchmark runs with another config directory, or hooks disabled, leave no trace | `doctor` shows which hooks are registered; compare session counts |
+| OMP turns that never finish | The extension sends on `agent_end`; an aborted turn is sent only if it completed | — |
+| Cost | Langfuse prices a model call only if the project has a model definition matching the model name | Add model definitions in Langfuse for the models you use |
+| Timing | Model-call start is the request row when the transcript has one, else the previous conversation row; tool time is call to result | — |
+
 To resend a gap, backfill a transcript for an explicit time range. It sends
 finished turns only, skips turns already confirmed locally, and reads Langfuse
 before writing so a stored turn is not duplicated. Start with `--dry-run`, which

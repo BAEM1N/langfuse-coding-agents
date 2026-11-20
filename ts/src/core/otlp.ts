@@ -32,7 +32,7 @@ export function loadOtlpConfig(env: NodeJS.ProcessEnv): OtlpConfig | undefined {
     captureContent: env.OTEL_CAPTURE_CONTENT === 'true', timeoutMs: Number.isFinite(timeout) && timeout > 0 ? Math.min(Math.trunc(timeout), 15000) || 1 : 5000 };
 }
 
-type AttributeValue = { stringValue: string } | { intValue: string } | { boolValue: boolean }
+type AttributeValue = { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean }
   | { arrayValue: { values: Array<{ stringValue: string }> } };
 type Attributes = Array<{ key: string; value: AttributeValue }>;
 
@@ -40,6 +40,7 @@ function attributes(values: Record<string, unknown>): Attributes {
   return Object.entries(values).flatMap(([key, v]): Attributes => {
     if (typeof v === 'string') return [{ key, value: { stringValue: v } }];
     if (typeof v === 'number' && Number.isSafeInteger(v)) return [{ key, value: { intValue: String(v) } }];
+    if (typeof v === 'number' && Number.isFinite(v)) return [{ key, value: { doubleValue: v } }];
     if (typeof v === 'boolean') return [{ key, value: { boolValue: v } }];
     if (Array.isArray(v) && v.length && v.every(item => typeof item === 'string')) {
       return [{ key, value: { arrayValue: { values: v.map(item => ({ stringValue: item as string })) } } }];
@@ -52,7 +53,9 @@ const epoch = (time: number) => (BigInt(time) * 1_000_000n).toString();
 /** OTLP span ID for an observation ID. Langfuse uses the span ID as the observation ID. */
 export const otlpSpanId = (id: string) => stableId('otlp-span', id).slice(0, 16);
 export const otlpTraceId = (id: string) => /^[0-9a-f]{32}$/.test(id) ? id : stableId('otlp-trace', id);
-const content = (value: unknown) => value === undefined ? undefined : JSON.stringify(sanitize(value, { redact: true, maxChars: 8000 }));
+const DEFAULT_MAX_CHARS = 8000;
+const content = (value: unknown, maxChars = DEFAULT_MAX_CHARS) =>
+  value === undefined ? undefined : JSON.stringify(sanitize(value, { redact: true, maxChars }));
 const count = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
 const OBSERVATION_TYPES: Record<string, string> = { 'agent-create': 'agent', 'generation-create': 'generation',
@@ -61,6 +64,56 @@ const OBSERVATION_TYPES: Record<string, string> = { 'agent-create': 'agent', 'ge
 export interface PayloadOptions extends Pick<OtlpConfig, 'serviceName' | 'captureContent'> {
   /** Emit only these observation IDs. Parents and links still resolve against the whole turn. */
   only?: ReadonlySet<string>;
+  /**
+   * The payload reaches Langfuse (directly, or through a Collector declared to
+   * forward there). Adds what legacy ingestion carried and OTLP otherwise drops:
+   * turn events as `event` observations (Langfuse ignores OTLP span events) and
+   * the adapters' trace and observation metadata. Other receivers get neither.
+   */
+  langfuse?: boolean;
+  /** Per-string limit for captured bodies. Defaults to 8000. */
+  maxChars?: number;
+}
+
+/** Metadata values as attributes: scalars as they are, small objects as JSON. */
+function metadataAttributes(prefix: string, metadata: unknown, skip: ReadonlySet<string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return out;
+  for (const [key, value] of Object.entries(metadata)) {
+    if (skip.has(key) || !/^[A-Za-z0-9_-]{1,64}$/.test(key) || value === undefined || value === null) continue;
+    if (typeof value === 'string') out[prefix + key] = value.slice(0, 1000);
+    else if (typeof value === 'number' || typeof value === 'boolean') out[prefix + key] = value;
+    else { const json = JSON.stringify(value); if (json.length <= 2000) out[prefix + key] = json; }
+  }
+  return out;
+}
+const TRACE_METADATA_SET_ELSEWHERE = new Set(['complete', 'turnIndex', 'hostname', 'github', 'device', 'agent']);
+const OBSERVATION_METADATA_SET_ELSEWHERE = new Set(['toolCallId', 'issuedByObservationId', 'consumedByObservationId', 'github']);
+
+/**
+ * Trace-level fields. Langfuse stores observations independently, so session,
+ * user, tags and filterable metadata are repeated on every span of the turn.
+ */
+function traceAttributes(trace: Record<string, unknown> | undefined, full: boolean | undefined): Record<string, unknown> {
+  const meta = trace?.metadata as { github?: GithubContext; complete?: unknown; turnIndex?: unknown; hostname?: unknown } | undefined;
+  const github = meta?.github;
+  return {
+    'langfuse.trace.name': typeof trace?.name === 'string' ? trace.name : undefined,
+    'langfuse.session.id': trace?.sessionId,
+    'langfuse.user.id': trace?.userId,
+    'langfuse.trace.tags': trace?.tags,
+    'langfuse.environment': trace?.environment,
+    'langfuse.release': trace?.release,
+    'langfuse.trace.metadata.agent': Array.isArray(trace?.tags) ? trace.tags[0] : undefined,
+    'langfuse.trace.metadata.complete': typeof meta?.complete === 'boolean' ? meta.complete : undefined,
+    'langfuse.trace.metadata.turnIndex': meta?.turnIndex,
+    'langfuse.trace.metadata.hostname': meta?.hostname,
+    'langfuse.trace.metadata.github_repository': github?.repository,
+    'langfuse.trace.metadata.github_branch': github?.branch,
+    'langfuse.trace.metadata.github_commit': github?.commit,
+    'langfuse.trace.metadata.github_pull_request': github?.pullRequest?.number,
+    ...(full ? metadataAttributes('langfuse.trace.metadata.', trace?.metadata, TRACE_METADATA_SET_ELSEWHERE) : {}),
+  };
 }
 
 export type OtlpSpan = ReturnType<typeof otlpPayload>['resourceSpans'][number]['scopeSpans'][number]['spans'][number];
@@ -102,8 +155,8 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
     const reasoning = count(net?.output_reasoning_tokens);
     const operation = generation ? 'chat' : tool ? 'execute_tool' : 'invoke_agent';
     const nativeTraceId = otlpTraceId(body.traceId);
-    const input = options.captureContent ? content(body.input) : undefined;
-    const output = options.captureContent ? content(body.output) : undefined;
+    const input = options.captureContent ? content(body.input, options.maxChars) : undefined;
+    const output = options.captureContent ? content(body.output, options.maxChars) : undefined;
     const root = !body.parentObservationId;
     const github = traceMeta?.github;
     const linked = (key: string) => {
@@ -140,20 +193,8 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
         'langfuse.observation.output': output,
         // The adapter's exclusive parts, unchanged, so nothing is counted twice.
         'langfuse.observation.usage_details': generation && net && Object.keys(net).length ? JSON.stringify(net) : undefined,
-        'langfuse.trace.name': typeof trace?.name === 'string' ? trace.name : undefined,
-        'langfuse.session.id': trace?.sessionId,
-        'langfuse.user.id': trace?.userId,
-        'langfuse.trace.tags': trace?.tags,
-        'langfuse.environment': trace?.environment,
-        'langfuse.release': trace?.release,
-        'langfuse.trace.metadata.agent': Array.isArray(trace?.tags) ? trace.tags[0] : undefined,
-        'langfuse.trace.metadata.complete': typeof traceMeta?.complete === 'boolean' ? traceMeta.complete : undefined,
-        'langfuse.trace.metadata.turnIndex': traceMeta?.turnIndex,
-        'langfuse.trace.metadata.hostname': traceMeta?.hostname,
-        'langfuse.trace.metadata.github_repository': github?.repository,
-        'langfuse.trace.metadata.github_branch': github?.branch,
-        'langfuse.trace.metadata.github_commit': github?.commit,
-        'langfuse.trace.metadata.github_pull_request': github?.pullRequest?.number,
+        ...traceAttributes(trace, options.langfuse),
+        ...(options.langfuse ? metadataAttributes('langfuse.observation.metadata.', meta, OBSERVATION_METADATA_SET_ELSEWHERE) : {}),
         // Langfuse ignores span links, so the tool's call ID and the model spans
         // before and after it are also kept as observation metadata.
         'langfuse.observation.metadata.toolCallId': tool && meta?.toolCallId !== undefined ? String(meta.toolCallId) : undefined,
@@ -169,11 +210,31 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
       }),
     }];
   });
+  // Notifications, permission requests, interruptions and timeline warnings.
+  // They stay as span events for trace viewers; Langfuse needs them as observations.
+  const eventSpans: typeof spans = !options.langfuse ? [] : events.filter(e => e.type === 'event-create').flatMap(({ body }) => {
+    if (typeof body.id !== 'string' || typeof body.traceId !== 'string') return [];
+    if (options.only && !options.only.has(body.id)) return [];
+    const trace = traces.get(body.traceId);
+    const at = Date.parse(String(body.startTime ?? trace?.timestamp));
+    if (!Number.isFinite(at)) return [];
+    return [{ traceId: otlpTraceId(body.traceId), spanId: otlpSpanId(body.id),
+      ...(typeof body.parentObservationId === 'string' && observations.has(body.parentObservationId) ? { parentSpanId: otlpSpanId(body.parentObservationId) } : {}),
+      name: String(body.name ?? 'coding_agent.event'), kind: 1, startTimeUnixNano: epoch(at), endTimeUnixNano: epoch(at),
+      status: { code: body.level === 'ERROR' ? 2 : 0 }, links: [],
+      attributes: attributes({ 'gen_ai.agent.name': agent, 'gen_ai.conversation.id': trace?.sessionId,
+        'langfuse.observation.type': 'event',
+        'langfuse.observation.level': typeof body.level === 'string' ? body.level : undefined,
+        'langfuse.observation.input': options.captureContent ? content(body.input, options.maxChars) : undefined,
+        ...traceAttributes(trace, true),
+        ...metadataAttributes('langfuse.observation.metadata.', body.metadata, OBSERVATION_METADATA_SET_ELSEWHERE) }),
+      events: [] }];
+  });
   const sample = traces.values().next().value;
   const metadata = sample?.metadata as { device?: Record<string, unknown> } | undefined;
   return { resourceSpans: [{ resource: { attributes: attributes({ ...metadata?.device,
     'service.name': options.serviceName ?? 'coding-agent-' + agent, 'deployment.environment.name': sample?.environment }) },
-    scopeSpans: [{ scope: { name: 'langfuse-coding-agents' }, spans }] }] };
+    scopeSpans: [{ scope: { name: 'langfuse-coding-agents' }, spans: [...spans, ...eventSpans] }] }] };
 }
 
 export interface SendOutcome {

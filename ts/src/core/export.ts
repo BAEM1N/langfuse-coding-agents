@@ -153,7 +153,9 @@ function chunkSpans(spans: OtlpSpan[]): OtlpSpan[][] {
 async function deliverOtlp(config: Config, destination: Destination, traceId: string, events: IngestionEvent[],
   dir: string, logger: Logger): Promise<Attempt> {
   const otlp = destination.otlp!;
-  const observations = events.filter(event => event.type !== 'trace-create' && event.type !== 'event-create');
+  // Turn events are observations of their own only where the payload reaches Langfuse.
+  const langfuse = destination.kind === 'langfuse-otlp' || config.otlpForwardsToLangfuse;
+  const observations = events.filter(event => event.type !== 'trace-create' && (langfuse || event.type !== 'event-create'));
   const hashes = new Map(observations.map(event => [String(event.body.id), contentHash(event)]));
   const previous = readRecord(dir, traceId, destination.id);
   // The receiver may already hold these spans and does not deduplicate span IDs,
@@ -175,7 +177,10 @@ async function deliverOtlp(config: Config, destination: Destination, traceId: st
     return { traceId, status: 'held', sent: 0, message: previous.lastError };
   }
 
-  const payload = otlpPayload(events, config.agent, { serviceName: otlp.serviceName, captureContent: otlp.captureContent, only: new Set(fresh) });
+  const payload = otlpPayload(events, config.agent, { serviceName: otlp.serviceName, captureContent: otlp.captureContent,
+    only: new Set(fresh), langfuse,
+    // The direct route keeps the body limit legacy ingestion used for the same project.
+    maxChars: destination.kind === 'langfuse-otlp' ? config.maxChars : undefined });
   const resource = payload.resourceSpans[0];
   const bySpanId = new Map(fresh.map(id => [otlpSpanId(id), id]));
   const emitted = new Set(resource.scopeSpans[0].spans.map(span => bySpanId.get(span.spanId)));

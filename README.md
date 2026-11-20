@@ -71,7 +71,7 @@ LANGFUSE_HOOK_TRANSPORT=otlp
 
 Langfuse Cloud stopped storing trace events sent to `/api/public/ingestion` on 2026-11-16, so a Cloud project needs `otlp`. An existing install is never switched for you: `doctor` and the setup script print a warning, and you change the setting. To switch, add the line above or run setup with `--langfuse-transport otlp`. To go back, set `legacy` or restore the `.env.bak-<timestamp>` file the setup script writes next to `.env`. Do not send one project both ways: each turn would be stored twice.
 
-With `otlp`, a turn is sent once it has finished, and never sent again after Langfuse accepts it, because Langfuse v4 does not deduplicate span IDs. Prompt and tool bodies are sent as before, redacted and capped at 8,000 characters per field. Set `LANGFUSE_HOOK_CAPTURE_CONTENT=false` to leave them out. The standalone Python integrations under `tools/` use the Langfuse SDK and are not affected by this setting.
+With `otlp`, a turn is sent once it has finished, and never sent again after Langfuse accepts it, because Langfuse v4 does not deduplicate span IDs. A turn left without a Stop event is closed and sent after its transcript has been idle for an hour. Prompt and tool bodies, turn events and adapter metadata are sent as before, redacted and with the same per-string limit as legacy ingestion (`LANGFUSE_HOOK_MAX_CHARS`, default 20,000). See [what is not captured](docs/setup-agent-observability.md#what-is-not-captured). Set `LANGFUSE_HOOK_CAPTURE_CONTENT=false` to leave them out. The standalone Python integrations under `tools/` use the Langfuse SDK and are not affected by this setting.
 
 ### 2. Install hooks for your agents
 

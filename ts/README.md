@@ -77,6 +77,7 @@ Optional:
 | `LANGFUSE_HOOK_TIMEOUT_MS` | `15000` | HTTP timeout |
 | `LANGFUSE_HOOK_TRANSPORT` | `legacy` | `otlp` for Langfuse Cloud and self-hosted v4. Never changed for you |
 | `LANGFUSE_HOOK_CAPTURE_CONTENT` | — | `false` leaves prompt and tool bodies out of the direct OTLP route |
+| `LANGFUSE_HOOK_STALE_TURN_MINUTES` | `60` | a turn with no end marker whose transcript has been idle this long is closed and sent with `endedWithoutStop: true`; `0` disables |
 | `CODING_AGENT_OTLP_FORWARDS_TO_LANGFUSE` | `false` | `true` when the OTLP endpoint is a Collector that also feeds Langfuse; direct export is then refused |
 | `LANGFUSE_HOOK_ALLOW_DUAL_ROUTE` | `false` | `true` to send direct and through such a Collector anyway (the project stores each turn twice) |
 
