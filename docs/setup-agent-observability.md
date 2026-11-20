@@ -190,9 +190,12 @@ or credentials.
 | `unconfirmed` | timeout, lost response, or an OTLP partial rejection | held until you decide |
 
 Langfuse v4 and Tempo keep both copies when a span ID is sent twice, so an
-`unconfirmed` turn is not resent on its own. Read it back with `verify`. If it is
-missing, `node ts/src/cli.ts delivery <agent> clear <traceId>` lets the next run
-send it. Legacy ingestion upserts by ID, so that route simply retries.
+`unconfirmed` turn is not resent on its own. Read it back with `verify`, which
+shows how many of its spans the backend holds. `verify <agent> <traceId>
+--reconcile` then accepts the spans it found and releases only the missing ones
+for the next run. Wait a few minutes after the send first: a read can run ahead
+of ingestion. `delivery <agent> clear <traceId>` forgets the record entirely.
+Legacy ingestion upserts by ID, so that route simply retries.
 
 A final response that reaches the transcript after the Stop event is sent as a
 new span on the next hook run. A span that changed after it was accepted cannot
@@ -218,8 +221,9 @@ from where each agent writes it.
 Each run appears twice, and its tokens are counted once.
 
 - **Inside the turn's trace**: an agent span `Subagent: <type or nickname>` with
-  its model calls and tools beneath it. For Claude Code it sits under the tool
-  call that started it; for Codex under the turn. Usage is recorded here, so a
+  its model calls and tools beneath it. It sits under the tool call that started it
+  (Claude Code: the agent call; Codex: the call recorded as spawning the
+  thread). Usage is recorded here, so a
   turn's total includes its sub-agents.
 - **As a trace of its own**, tagged `subagent` in the same session, named
   `<Agent> - Subagent: <type>`. Its model calls are plain spans with the usage in
