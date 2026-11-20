@@ -147,7 +147,7 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
     return t;
   };
 
-  const closeGen = (t: TurnAcc, key: string, ts: string, usage?: Usage) => {
+  const closeGen = (t: TurnAcc, key: string, ts: string, usage?: Usage, metadata?: Record<string, unknown>) => {
     const p = t.pending;
     if (!p) return;
     t.gens.push({
@@ -160,6 +160,7 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
       input: p.input,
       output: { role: 'assistant', content: p.outputs },
       usage,
+      metadata,
     });
     t.pending = undefined;
     t.boundary = ts;
@@ -295,11 +296,17 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
     }
 
     if (o.type === 'token_usage_record') {
+      // A model call can be billed without leaving any response item in the
+      // rollout (for example a response that was cut short). Keep it as a
+      // generation so its tokens are not lost from the turn.
+      const silent = !t.pending && codexUsage(p.usage) !== undefined;
+      if (silent) pendingGen(t, ts);
       if (t.pending && t.pending.input.length === 0 && nextInput.length) {
         t.pending.input = nextInput;
         nextInput = [];
       }
-      closeGen(t, p.response_id ?? `resp-${offset}`, ts, codexUsage(p.usage));
+      closeGen(t, p.response_id ?? `resp-${offset}`, ts, codexUsage(p.usage),
+        silent ? { recordedOutput: false } : undefined);
     }
   }
 
