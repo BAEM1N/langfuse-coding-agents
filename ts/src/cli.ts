@@ -5,6 +5,7 @@
 //   node src/cli.ts install [claude|codex|antigravity|copilot|all] [--dry-run]
 //   node src/cli.ts uninstall [claude|codex|antigravity|all]
 //   node src/cli.ts doctor [claude|codex]
+//   node src/cli.ts delivery <agent> [--all] | delivery <agent> clear <traceId> [--destination ID]
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> [--session ID] [--dry-run]
@@ -22,11 +23,13 @@ import { batchOptions, logPath, normalizePayload, parseTranscript, runHook } fro
 import { turnToEvents } from './core/batch.ts';
 import { LangfuseClient } from './core/langfuse.ts';
 import { createLogger } from './core/log.ts';
-import { canExport, exportEvents } from './core/export.ts';
+import { canExport, deliveryDir, exportEvents } from './core/export.ts';
+import { clearRecord, listRecords } from './core/delivery.ts';
+import { isLangfuseCloud, resolveDestinations } from './core/destinations.ts';
 import { githubAttributes, githubOptions, readGithubContext } from './core/github.ts';
 import { applyPlan, deployPackage, HOOK_EVENTS, planAntigravityInstall, planCopilotInstall, planInstall } from './install.ts';
 import type { Turn } from './core/types.ts';
-import type { AgentName } from './core/types.ts';
+import type { AgentName, TraceAgentName } from './core/types.ts';
 
 const AGENTS: AgentName[] = ['claude', 'codex'];
 
@@ -110,7 +113,8 @@ function cmdInstall(target: string | undefined, dryRun: boolean, remove: boolean
 async function cmdDoctor(target: string | undefined): Promise<void> {
   console.log(`node ${process.version} (${process.execPath})`);
   for (const agent of agentsArg(target)) {
-    const cfg = loadConfig(agent, { ...process.env });
+    const env = { ...process.env };
+    const cfg = loadConfig(agent, env);
     const mask = (s?: string) => (s ? `${s.slice(0, 10)}…${s.slice(-4)}` : '(missing)');
     console.log(`\n[${agent}] home=${cfg.agentHome}`);
     console.log(`  enabled=${cfg.enabled} url=${cfg.baseUrl} user=${cfg.userId} redact=${cfg.redact} maxChars=${cfg.maxChars}`);
@@ -118,8 +122,31 @@ async function cmdDoctor(target: string | undefined): Promise<void> {
     if (cfg.publicKey && cfg.secretKey) {
       const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey, timeoutMs: cfg.timeoutMs, logger: createLogger(logPath(cfg), false) });
       const a = await client.authCheck();
-      console.log(`  auth: ${a.ok ? 'OK' : 'FAILED'} (${a.message})`);
+      // Valid keys say nothing about whether traces are being stored.
+      console.log(`  auth: ${a.ok ? 'OK' : 'FAILED'} (${a.message}) - credentials only, not proof of ingestion`);
     }
+    const destinations = resolveDestinations(cfg);
+    console.log(`  langfuse transport=${cfg.langfuseTransport}${env.LANGFUSE_HOOK_TRANSPORT ? '' : ' (default; LANGFUSE_HOOK_TRANSPORT unset)'}`);
+    if (!destinations.length) console.log('  destinations: (none) - nothing will be sent');
+    for (const d of destinations) {
+      console.log(`  destination: ${d.label} [${d.id}]${d.configError ? `\n    CONFIG ERROR: ${d.configError}` : ''}`);
+      if (d.kind === 'langfuse-legacy' && isLangfuseCloud(cfg.baseUrl)) {
+        console.log('    WARNING: Langfuse Cloud retired legacy trace ingestion on 2026-11-16. Set LANGFUSE_HOOK_TRANSPORT=otlp.');
+      }
+      if (d.relay) console.log('    note: a relay accepting a request does not show that its backends stored it');
+    }
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    const recent = listRecords(deliveryDir(cfg)).filter((r) => Date.parse(r.updatedAt) >= since);
+    for (const d of destinations) {
+      const mine = recent.filter((r) => r.destination === d.id);
+      const count = (status: string) => mine.filter((r) => r.status === status).length;
+      const late = mine.filter((r) => r.lateChanges?.length).length;
+      console.log(`  delivery, last 24h, ${d.label}: confirmed=${count('confirmed')} partial=${count('partial')} failed=${count('failed')} unconfirmed=${count('unconfirmed')} changed-after-delivery=${late}`);
+      if (!mine.length) console.log('    no delivery attempts recorded: ingestion is unverified');
+      const stuck = mine.filter((r) => r.status !== 'confirmed');
+      if (stuck.length) console.log(`    last problem: ${stuck[stuck.length - 1].lastError ?? '(no detail)'}\n    see: delivery ${agent}`);
+    }
+    console.log(`  "confirmed" means the destination accepted the request. Use verify ${agent} <traceId> to read it back.`);
     const plan = planInstall(agent, '', process.execPath);
     const hooks = (plan.before as any).hooks ?? {};
     const registered = Object.entries(hooks)
@@ -134,6 +161,36 @@ async function cmdDoctor(target: string | undefined): Promise<void> {
       const tail = readFileSync(lp, 'utf8').trimEnd().split('\n').slice(-3);
       console.log(`  log (${lp}):\n    ${tail.join('\n    ')}`);
     }
+  }
+}
+
+const TRACE_AGENTS: TraceAgentName[] = ['claude', 'codex', 'omp', 'antigravity', 'copilot', 'deepagents', 'opencode'];
+
+/** Show or reset per-destination delivery state. Prints IDs and statuses only. */
+function cmdDelivery(agent: string | undefined, args: string[]): void {
+  if (!TRACE_AGENTS.includes(agent as TraceAgentName)) throw new Error('delivery expects one of: ' + TRACE_AGENTS.join(', '));
+  const cfg = loadConfig(agent as TraceAgentName, { ...process.env });
+  const dir = deliveryDir(cfg);
+  const records = listRecords(dir);
+  if (args[1] === 'clear') {
+    const traceId = args[2];
+    if (!traceId || traceId.startsWith('--')) throw new Error('delivery <agent> clear <traceId> [--destination ID]');
+    const only = flag(args, 'destination');
+    const targets = records.filter((r) => r.traceId === traceId && (typeof only !== 'string' || r.destination === only));
+    if (!targets.length) throw new Error('no delivery record for that trace');
+    for (const r of targets) {
+      clearRecord(dir, r.traceId, r.destination);
+      console.log(`cleared ${r.traceId} ${r.destination} (was ${r.status})`);
+    }
+    console.log('The turn is sent again the next time its transcript is read or backfilled.');
+    console.log('A receiver that does not deduplicate span IDs (Langfuse v4, Tempo) may then hold it twice.');
+    return;
+  }
+  const shown = flag(args, 'all') ? records : records.filter((r) => r.status !== 'confirmed' || r.lateChanges?.length);
+  console.log(`${dir}: ${records.length} record(s), ${shown.length} shown${flag(args, 'all') ? '' : ' (not confirmed, or changed after delivery; --all for every record)'}`);
+  for (const r of shown.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))) {
+    console.log(`  ${r.updatedAt} ${r.status.padEnd(11)} trace=${r.traceId} dest=${r.destination} accepted=${Object.keys(r.spans).length}` +
+      ` pending=${r.pending?.length ?? 0} changed-after=${r.lateChanges?.length ?? 0} attempts=${r.attempts}${r.lastError ? `\n      ${r.lastError}` : ''}`);
   }
 }
 
@@ -263,12 +320,14 @@ async function main(): Promise<void> {
       }
       return;
     }
+    case 'delivery':
+      return cmdDelivery(a1, args);
     case 'audit-langfuse':
       return cmdAuditLangfuse(a1, args);
     case 'backfill':
       return cmdBackfill(agentsArg(a1)[0], a2, rest);
     default:
-      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 8).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 9).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   }
 }
 

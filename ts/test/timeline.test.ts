@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { appendFileSync, mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ompExtension from '../src/omp-extension.ts';
@@ -179,14 +179,15 @@ test('OMP extension exports a completed turn without prompt or tool bodies', asy
   const home = mkdtempSync(join(tmpdir(), 'langfuse-omp-test-'));
   const env = { PI_CODING_AGENT_DIR: home, TRACE_TO_LANGFUSE: 'true', LANGFUSE_BASE_URL: 'https://example.test',
     CC_LANGFUSE_BASE_URL: 'https://example.test', CC_LANGFUSE_PUBLIC_KEY: 'test', CC_LANGFUSE_SECRET_KEY: 'test',
-    CODING_AGENT_OTLP_ENABLED: 'false', LANGFUSE_HOOK_CAPTURE_CONTENT: 'false' };
+    CODING_AGENT_OTLP_ENABLED: 'false', LANGFUSE_HOOK_CAPTURE_CONTENT: 'false',
+    CODING_AGENT_GITHUB_METADATA: 'false' }; // keep the test off the network
   const before = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   t.after(() => {
     for (const [key, value] of Object.entries(before)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
-    try { rmdirSync(join(home, 'state')); } catch {}
-    rmdirSync(home);
+    // The exporter records per-destination delivery state under <home>/state.
+    rmSync(home, { force: true, recursive: true });
   });
   Object.assign(process.env, env);
   let batch: Array<{ type: string; body: Record<string, unknown> }> = [];

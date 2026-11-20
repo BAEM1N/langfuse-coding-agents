@@ -3,10 +3,10 @@ import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { findCodexRollout, parseCodexRollout, type CodexContext } from '../adapters/codex.ts';
 import { parseClaudeTranscript } from '../adapters/claude.ts';
-import { turnToEvents, type BatchOptions } from './batch.ts';
+import { traceIdFor, turnToEvents, type BatchOptions } from './batch.ts';
 import { loadConfig, type Config } from './config.ts';
 import { readJsonlFrom } from './jsonl.ts';
-import { canExport, exportEvents } from './export.ts';
+import { canExport, exportEvents, type DestinationResult } from './export.ts';
 import { createLogger, type Logger } from './log.ts';
 import { loadState, saveState, type TranscriptState } from './state.ts';
 import type { AgentName, HookPayload, TraceAgentName, Turn } from './types.ts';
@@ -139,6 +139,8 @@ export interface HookResult {
   turns?: number;
   events?: number;
   errors?: number;
+  /** Per-destination outcome. A hook never fails the agent because of these. */
+  destinations?: DestinationResult[];
 }
 
 export async function runHook(agent: AgentName, raw: Record<string, unknown>, logger?: Logger): Promise<HookResult> {
@@ -190,21 +192,28 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
   const events = turns.flatMap((t) => turnToEvents(t, opts));
   const started = Date.now();
   const res = await exportEvents(cfg, events, log, p.cwd);
-  if (!res.ok) {
-    log.error(`ingest failed (${res.errors.length} errors): ${JSON.stringify(res.errors.slice(0, 3))}`);
-    return { turns: turns.length, events: events.length, errors: res.errors.length };
-  }
 
   if (transcript && st) {
-    const last = turns[turns.length - 1];
-    state.transcripts[transcript] = {
-      offset: last.offset,
-      turnsBefore: Math.max(0, last.index - 1),
+    // The read position only says where the next parse starts. Whether a turn
+    // reached a destination is tracked per destination in the delivery state,
+    // so the position stops at the first turn some destination still needs.
+    // The last turn is always read again: its final response can land late.
+    const settled = new Set(res.settled);
+    const resume = turns.find((t) => !t.complete || !settled.has(traceIdFor(opts.agentTag, t.sessionId, t.key)))
+      ?? turns[turns.length - 1];
+    const latest = loadState(statePath); // another session may have saved meanwhile
+    latest.transcripts[transcript] = {
+      offset: resume.offset,
+      turnsBefore: Math.max(0, resume.index - 1),
       context: context ?? st.context,
       updatedAt: new Date().toISOString(),
     };
-    saveState(statePath, state);
+    saveState(statePath, latest);
   }
-  log.info(`${event}: sent ${turns.length} turn(s), ${events.length} events in ${Date.now() - started}ms (session=${sessionId})`);
-  return { turns: turns.length, events: events.length, errors: 0 };
+  if (!res.ok) {
+    log.error(`${event}: export incomplete (${res.errors.length} problem(s), session=${sessionId})`);
+    return { turns: turns.length, events: events.length, errors: res.errors.length, destinations: res.destinations };
+  }
+  log.debug(`${event}: ${turns.length} turn(s) read, ${res.sent} item(s) sent in ${Date.now() - started}ms (session=${sessionId})`);
+  return { turns: turns.length, events: events.length, errors: 0, destinations: res.destinations };
 }

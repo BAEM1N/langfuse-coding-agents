@@ -20,6 +20,20 @@ export interface Config {
   redact: boolean;
   debug: boolean;
   timeoutMs: number;
+  /**
+   * How turns reach Langfuse directly. `legacy` posts to /api/public/ingestion
+   * (self-hosted deployments that still accept it). `otlp` posts to
+   * /api/public/otel/v1/traces. Unset keeps `legacy` so existing installs keep
+   * their destination; switching is always an explicit setting.
+   */
+  langfuseTransport: 'legacy' | 'otlp';
+  transportError?: string;
+  /** False only when LANGFUSE_HOOK_CAPTURE_CONTENT=false; applies to the direct OTLP route. */
+  langfuseCaptureContent: boolean;
+  /** Declares that the generic OTLP endpoint is a Collector that also forwards to Langfuse. */
+  otlpForwardsToLangfuse: boolean;
+  /** Explicit opt-in to send one turn to the same Langfuse project over two routes. */
+  allowDualLangfuse: boolean;
   otlp?: OtlpConfig;
   otlpError?: string;
   collectorLauncher?: string;
@@ -38,7 +52,8 @@ export function agentHome(agent: TraceAgentName): string {
 }
 
 export function sharedConfigDir(): string {
-  return join(homedir(), '.config', 'langfuse-agent-hooks');
+  // The override keeps tests and trial installs away from the real settings.
+  return process.env.LANGFUSE_AGENT_HOOKS_CONFIG_DIR || join(homedir(), '.config', 'langfuse-agent-hooks');
 }
 
 export function defaultUserId(): string {
@@ -100,9 +115,16 @@ export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = proce
   let otlpError: string | undefined;
   try { otlp = loadOtlpConfig(env); } catch { otlpError = 'Invalid OTLP endpoint, protocol, or headers'; }
   const host = pick(env, 'CC_LANGFUSE_HOSTNAME', 'LANGFUSE_HOOK_HOSTNAME') ?? hostname();
+  const transport = (pick(env, 'LANGFUSE_HOOK_TRANSPORT') ?? 'legacy').toLowerCase();
+  const knownTransport = transport === 'legacy' || transport === 'otlp';
   return {
     agent,
     agentHome: home,
+    langfuseTransport: transport === 'otlp' ? 'otlp' : 'legacy',
+    transportError: knownTransport ? undefined : 'LANGFUSE_HOOK_TRANSPORT must be legacy or otlp',
+    langfuseCaptureContent: (pick(env, 'LANGFUSE_HOOK_CAPTURE_CONTENT') ?? '').toLowerCase() !== 'false',
+    otlpForwardsToLangfuse: (pick(env, 'CODING_AGENT_OTLP_FORWARDS_TO_LANGFUSE') ?? '').toLowerCase() === 'true',
+    allowDualLangfuse: (pick(env, 'LANGFUSE_HOOK_ALLOW_DUAL_ROUTE') ?? '').toLowerCase() === 'true',
     otlp,
     otlpError,
     collectorLauncher: env.CODING_AGENT_COLLECTOR_LAUNCHER,

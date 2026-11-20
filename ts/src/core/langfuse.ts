@@ -1,4 +1,5 @@
 import type { Logger } from './log.ts';
+import { redact } from './text.ts';
 
 export interface IngestionEvent {
   id: string;
@@ -66,18 +67,25 @@ export class LangfuseClient {
       });
       const text = await res.text();
       if (res.status !== 200 && res.status !== 207) {
-        return { ok: false, sent: 0, errors: [{ status: res.status, message: text.slice(0, 500) }] };
+        // The response body is not logged: an error page can echo the request.
+        return { ok: false, sent: 0, errors: [{ status: res.status, message: 'Langfuse ingestion failed (HTTP ' + res.status + ')' }] };
       }
       let errors: IngestResult['errors'] = [];
       try {
         const body = JSON.parse(text) as { errors?: IngestResult['errors'] };
-        errors = body.errors ?? [];
+        // A 207 reports each rejected event separately. Keep the ID and status only.
+        errors = (Array.isArray(body.errors) ? body.errors : []).map((error) => ({
+          id: typeof error?.id === 'string' ? error.id : undefined,
+          status: typeof error?.status === 'number' ? error.status : undefined,
+          message: typeof error?.message === 'string' ? redact(error.message).slice(0, 200) : undefined,
+        }));
       } catch {
         /* 200 without JSON body */
       }
       return { ok: errors.length === 0, sent: batch.length - errors.length, errors };
     } catch (e) {
-      return { ok: false, sent: 0, errors: [{ message: (e as Error).message }] };
+      const timedOut = (e as Error).name === 'TimeoutError' || (e as Error).name === 'AbortError';
+      return { ok: false, sent: 0, errors: [{ message: timedOut ? 'Langfuse ingestion timed out' : 'Langfuse ingestion request failed' }] };
     }
   }
 
