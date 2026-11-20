@@ -431,13 +431,21 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
     let run: StoredTrace | undefined;
     const expected = scenario.turnTypes.split(',').length;
     const deadline = Date.now() + (options.waitMs ?? 90_000);
+    let readError: string | undefined;
     do {
-      const read = await withReadApi(api, async chosen => [await readBack(client, chosen, turnId), await readBack(client, chosen, runId)] as const);
-      api = read.api;
-      [turn, run] = read.value;
-      if (turn && run && turn.observations.length >= expected) break;
+      try {
+        const read = await withReadApi(api, async chosen => [await readBack(client, chosen, turnId), await readBack(client, chosen, runId)] as const);
+        api = read.api;
+        [turn, run] = read.value;
+        readError = undefined;
+        if (turn && run && turn.observations.length >= expected) break;
+      } catch (error) {
+        // A slow or dropped read is tried again; it is not the answer to whether the trace is stored.
+        readError = (error as Error).message;
+      }
       await wait(3000);
     } while (Date.now() < deadline);
+    if (readError) check('project could be read back', false, readError);
 
     check('turn trace stored', Boolean(turn), 'not found by trace ID ' + turnId);
     check('sub-agent trace stored', Boolean(run), 'not found by trace ID ' + runId);

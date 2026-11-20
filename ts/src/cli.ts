@@ -305,9 +305,15 @@ async function cmdSelfTest(agent: string | undefined, args: string[]): Promise<v
   for (const format of formats) {
     // Keys come from that agent's own settings, as they do when its integration runs.
     const cfg = loadConfig(format, { ...process.env });
-    const report = await selfTest(cfg, { format, keep: !!flag(args, 'keep'), api: readApi(args) });
-    console.log(JSON.stringify(report, null, 2));
-    if (!report.ok) process.exitCode = 1;
+    try {
+      const report = await selfTest(cfg, { format, keep: !!flag(args, 'keep'), api: readApi(args) });
+      console.log(JSON.stringify(report, null, 2));
+      if (!report.ok) process.exitCode = 1;
+    } catch (error) {
+      // One format failing to run must not hide the results of the others.
+      console.log(JSON.stringify({ ok: false, format, error: (error as Error).message }, null, 2));
+      process.exitCode = 1;
+    }
   }
 }
 
