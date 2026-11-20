@@ -59,7 +59,19 @@ TRACE_TO_LANGFUSE=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
+LANGFUSE_HOOK_TRANSPORT=otlp
 ```
+
+`LANGFUSE_HOOK_TRANSPORT` selects how the shared Node runtime reaches Langfuse.
+
+| Value | Sends to | Use with |
+|---|---|---|
+| `otlp` | `/api/public/otel/v1/traces` (OTLP/HTTP JSON, `x-langfuse-ingestion-version: 4`) | Langfuse Cloud, self-hosted v4 |
+| `legacy` or unset | `/api/public/ingestion` | Self-hosted v3, or v4 running in `legacy` or `dual` write mode |
+
+Langfuse Cloud stopped storing trace events sent to `/api/public/ingestion` on 2026-11-16, so a Cloud project needs `otlp`. An existing install is never switched for you: `doctor` and the setup script print a warning, and you change the setting. To switch, add the line above or run setup with `--langfuse-transport otlp`. To go back, set `legacy` or restore the `.env.bak-<timestamp>` file the setup script writes next to `.env`. Do not send one project both ways: each turn would be stored twice.
+
+With `otlp`, a turn is sent once it has finished, and never sent again after Langfuse accepts it, because Langfuse v4 does not deduplicate span IDs. Prompt and tool bodies are sent as before, redacted and capped at 8,000 characters per field. Set `LANGFUSE_HOOK_CAPTURE_CONTENT=false` to leave them out. The standalone Python integrations under `tools/` use the Langfuse SDK and are not affected by this setting.
 
 ### 2. Install hooks for your agents
 
@@ -80,9 +92,14 @@ Press Enter at the trace name prompt to use your home folder name, or pass `--na
 In a test directory, create `probe.txt` with a unique marker and ask the agent to read it and return its contents. In Langfuse, find the new trace and check the model call, tool execution, and following model call. Inspect the tool arguments and result plus the input/output token fields. Availability depends on the adapter and capture settings.
 
 ```sh
-node ts/src/cli.ts doctor claude
-node ts/src/cli.ts audit-langfuse claude --limit 10
+node ts/src/cli.ts doctor claude                     # settings, destinations, last 24h of delivery results
+node ts/src/cli.ts delivery claude                   # turns that are failed, partial or unconfirmed
+node ts/src/cli.ts verify claude <traceId>           # read the trace back from Langfuse
+node ts/src/cli.ts verify claude <traceId> --tempo http://127.0.0.1:13200
+node ts/src/cli.ts audit-langfuse claude --limit 10  # --api v2 for Cloud and v4, --api legacy for v3
 ```
+
+`doctor` reporting valid keys, or a hook logging that a request was accepted, does not show that a trace is stored. `verify` does: it reads the trace from the backend and compares it with what was sent. A turn listed as `unconfirmed` (timeout, lost response, or a partial rejection) is not sent again automatically; check it with `verify`, then run `delivery claude clear <traceId>` only if it is missing.
 
 Use `codex` in those diagnostic commands if its configuration holds the project keys. See the [platform setup guide](docs/setup-agent-observability.md) for [Deep Agents SDK](tools/deepagents/) and [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) setup.
 
@@ -103,6 +120,8 @@ node scripts/start-grafana.mjs --tempo 'C:\path\tempo.exe' --grafana 'C:\path\gr
 node scripts/start-grafana.mjs --tempo /path/to/tempo --grafana /path/to/grafana-home
 sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo http://127.0.0.1:14328/v1/traces --capture-content
 ```
+
+By default the hooks keep sending to Langfuse themselves and use the Collector's `14318` receiver for Tempo. Add `--collector-route both` to send only to the Collector's `14319` receiver, which forwards to Langfuse and Tempo; setup then turns off direct export so the project gets each turn once. `--collector-route tempo` switches back. On the `both` route, bodies reach Langfuse only with `--capture-content`, and the Collector accepting a request does not confirm delivery to either backend, so check with `verify`.
 
 `--grafana` points to the extracted Grafana home directory, and `--tempo` on the setup script is the OTLP ingest URL. The example Collector starts on demand. Restart an existing Collector after updating its YAML. Use `--capture-content` only when you want supported exporters to include prompt, response, and tool bodies.
 

@@ -1,12 +1,28 @@
+# Three loopback receivers, one per route:
+#   14318  shared hooks -> local file + Tempo          (Langfuse is reached directly by the hooks)
+#   14319  shared hooks -> local file + Langfuse + Tempo
+#   14320  native Goose -> local file + Langfuse + Tempo, with local user and host added
+#
+# Use 14318 or 14319 for the shared hooks, never both for the same turn. With
+# 14319, turn off direct export (TRACE_TO_LANGFUSE=false) so a project does not
+# receive each turn twice.
+#
+# A 2xx from a receiver means the Collector queued the spans. The exporters
+# retry from an in-memory queue, which is lost if the Collector stops; add a
+# persistent queue (file_storage extension) if that matters to you.
 receivers:
   otlp/local:
     protocols:
       http:
-        endpoint: 127.0.0.1:14318
+        endpoint: 127.0.0.1:${env:CODING_AGENT_COLLECTOR_LOCAL_PORT:-14318}
+  otlp/both:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:${env:CODING_AGENT_COLLECTOR_BOTH_PORT:-14319}
   otlp/goose:
     protocols:
       http:
-        endpoint: 127.0.0.1:14320
+        endpoint: 127.0.0.1:${env:CODING_AGENT_COLLECTOR_GOOSE_PORT:-14320}
 
 exporters:
   file:
@@ -15,14 +31,25 @@ exporters:
       max_megabytes: 20
       max_days: 7
       max_backups: 3
+  # Native Goose spans. Unchanged.
   otlp_http/langfuse:
     traces_endpoint: ${env:CODING_AGENT_LANGFUSE_OTLP_URL}
     headers:
       Authorization: ${env:CODING_AGENT_LANGFUSE_AUTH}
+  # Shared-hook spans, which carry the attributes the Langfuse v4 data model
+  # expects. The header makes them available without the staging delay.
+  otlp_http/langfuse-v4:
+    traces_endpoint: ${env:CODING_AGENT_LANGFUSE_OTLP_URL}
+    headers:
+      Authorization: ${env:CODING_AGENT_LANGFUSE_AUTH}
+      x-langfuse-ingestion-version: "4"
+  # No Langfuse credentials or headers on this exporter.
   otlp_http/tempo:
     traces_endpoint: ${env:CODING_AGENT_TEMPO_TRACES_URL}
 
 processors:
+  # Goose only. The shared hooks already set user and host on their spans, so
+  # this processor is kept off their pipelines.
   resource/local-user:
     attributes:
       - key: user.id
@@ -50,6 +77,9 @@ service:
     traces/local:
       receivers: [otlp/local]
       exporters: [file, otlp_http/tempo]
+    traces/both:
+      receivers: [otlp/both]
+      exporters: [file, otlp_http/langfuse-v4, otlp_http/tempo]
     traces/goose:
       receivers: [otlp/goose]
       processors: [resource/local-user]

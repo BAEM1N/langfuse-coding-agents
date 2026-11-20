@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { agentHome, defaultUserId, loadConfig, sharedConfigDir } from '../ts/src/core/config.ts';
+import { isLangfuseCloud, resolveDestinations } from '../ts/src/core/destinations.ts';
 import { applyPlan, deployPackage, installRoot, planAntigravityInstall, planCopilotInstall, planInstall } from '../ts/src/install.ts';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -13,14 +14,27 @@ const options = parseArgs({ options: {
   agents: { type: 'string', default: 'claude,codex,omp,antigravity,copilot,opencode' },
   collector: { type: 'string' }, tempo: { type: 'string' }, python: { type: 'string' },
   'capture-content': { type: 'boolean' }, help: { type: 'boolean' },
+  'langfuse-transport': { type: 'string' }, 'collector-route': { type: 'string' },
 } }).values;
 
 if (options.help) {
   console.log('Usage: setup [--name NAME] [--device LABEL] [--environment NAME] [--agents LIST]');
-  console.log('       [--collector OTELCOL_BINARY] [--tempo OTLP_HTTP_TRACE_URL] [--capture-content] [--python PYTHON]');
+  console.log('       [--langfuse-transport otlp|legacy]');
+  console.log('       [--collector OTELCOL_BINARY] [--collector-route tempo|both] [--tempo OTLP_HTTP_TRACE_URL]');
+  console.log('       [--capture-content] [--python PYTHON]');
   console.log('Agents: claude,codex,omp,antigravity,copilot,opencode,deepagents');
+  console.log('--langfuse-transport  otlp: Langfuse Cloud and self-hosted v4. legacy: older self-hosted. Unset: no change.');
+  console.log('--collector-route     tempo: hooks send Langfuse directly, Collector feeds Tempo (default).');
+  console.log('                      both: hooks send only to the Collector, which feeds Langfuse and Tempo.');
   process.exit(0);
 }
+if (options['langfuse-transport'] && !['otlp', 'legacy'].includes(options['langfuse-transport'])) {
+  throw Error('--langfuse-transport must be otlp or legacy');
+}
+if (options['collector-route'] && !['tempo', 'both'].includes(options['collector-route'])) {
+  throw Error('--collector-route must be tempo or both');
+}
+if (options['collector-route'] && !options.collector) throw Error('--collector-route needs --collector');
 
 const agents = options.agents.split(',').map(agent => agent.trim()).filter(Boolean);
 const supported = new Set(['claude', 'codex', 'omp', 'antigravity', 'copilot', 'opencode', 'deepagents']);
@@ -58,7 +72,8 @@ const deployedCli = deployPackage();
 const configDirectory = sharedConfigDir();
 const configPath = join(configDirectory, '.env');
 mkdirSync(configDirectory, { recursive: true });
-let lines = existsSync(configPath) ? readFileSync(configPath, 'utf8').replace(/^\uFEFF/, '').trimEnd().split(/\r?\n/) : [];
+const before = existsSync(configPath) ? readFileSync(configPath, 'utf8') : undefined;
+let lines = before !== undefined ? before.replace(/^\uFEFF/, '').trimEnd().split(/\r?\n/) : [];
 const set = (key, value, replace = true) => {
   if (value === undefined) return;
   if (/[\r\n\0]/.test(value)) throw Error(`${key} requires a single-line value`);
@@ -81,6 +96,8 @@ if (options['capture-content']) {
   set('OTEL_CAPTURE_CONTENT', 'true');
 }
 set('CODING_AGENT_TEMPO_TRACES_URL', options.tempo);
+// The transport changes only when asked. An existing install keeps its destination.
+set('LANGFUSE_HOOK_TRANSPORT', options['langfuse-transport']);
 if (options.collector) {
   if (!existing.publicKey || !existing.secretKey) throw Error('Set Langfuse project keys before installing the Collector relay');
   const directory = join(installRoot(), 'collector');
@@ -89,11 +106,31 @@ if (options.collector) {
   mkdirSync(directory, { recursive: true });
   if (resolve(options.collector) !== resolve(executable)) copyFileSync(options.collector, executable);
   for (const file of ['collector.yaml', 'start-collector.mjs']) copyFileSync(join(repo, 'docs', 'examples', file), join(directory, file));
-  set('CODING_AGENT_OTLP_TRACES_ENDPOINT', 'http://127.0.0.1:14318/v1/traces', false);
+  if (options['collector-route'] === 'both') {
+    // One route per project: the Collector forwards to Langfuse, so the hooks stop sending to it directly.
+    set('CODING_AGENT_OTLP_TRACES_ENDPOINT', 'http://127.0.0.1:14319/v1/traces');
+    set('CODING_AGENT_OTLP_FORWARDS_TO_LANGFUSE', 'true');
+    set('TRACE_TO_LANGFUSE', 'false');
+  } else if (options['collector-route'] === 'tempo') {
+    set('CODING_AGENT_OTLP_TRACES_ENDPOINT', 'http://127.0.0.1:14318/v1/traces');
+    set('CODING_AGENT_OTLP_FORWARDS_TO_LANGFUSE', 'false');
+    if (existing.publicKey && existing.secretKey) set('TRACE_TO_LANGFUSE', 'true');
+  } else {
+    set('CODING_AGENT_OTLP_TRACES_ENDPOINT', 'http://127.0.0.1:14318/v1/traces', false);
+  }
   set('CODING_AGENT_COLLECTOR_LAUNCHER', launcher, false);
   set('CODING_AGENT_NODE_EXECUTABLE', process.execPath, false);
+  // The launcher leaves a running Collector alone, and an older one has no 14319 receiver.
+  console.log('Collector configuration updated. Restart the Collector if one is already running.');
 }
-writeFileSync(configPath, lines.join('\n') + '\n', { mode: 0o600 });
+const after = lines.join('\n') + '\n';
+if (before !== undefined && before !== after) {
+  // Restore this file to undo a transport or route change.
+  const backup = `${configPath}.bak-${new Date().toISOString().replace(/\D/g, '').slice(0, 17)}`;
+  writeFileSync(backup, before, { mode: 0o600 });
+  console.log(`Previous settings saved to ${backup}`);
+}
+writeFileSync(configPath, after, { mode: 0o600 });
 
 const apply = plan => {
   if (JSON.stringify(plan.before) !== JSON.stringify(plan.after)) applyPlan(plan);
@@ -140,3 +177,12 @@ for (const agent of new Set(agents)) {
 if (agents.includes('codex')) console.log('Review newly registered hooks with Codex /hooks.');
 console.log(`Trace user: ${name}`);
 console.log(`Settings: ${configPath}`);
+const final = loadConfig('claude', { ...process.env });
+for (const destination of resolveDestinations(final)) {
+  console.log(`Destination: ${destination.label}${destination.configError ? ` - CONFIG ERROR: ${destination.configError}` : ''}`);
+  if (destination.kind === 'langfuse-legacy' && isLangfuseCloud(final.baseUrl)) {
+    console.log('  Langfuse Cloud retired legacy trace ingestion on 2026-11-16, so these turns are not stored.');
+    console.log('  Re-run with --langfuse-transport otlp to switch. Nothing was changed.');
+  }
+}
+console.log('Installing hooks does not show that traces are stored. Run one turn, then `doctor` and `verify <agent> <traceId>`.');

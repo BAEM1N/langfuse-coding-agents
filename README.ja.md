@@ -24,7 +24,10 @@ TRACE_TO_LANGFUSE=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
+LANGFUSE_HOOK_TRANSPORT=otlp
 ```
+
+`LANGFUSE_HOOK_TRANSPORT=otlp` は Langfuse Cloud とセルフホスト v4 向けで、`/api/public/otel/v1/traces` に送信します。Langfuse Cloud は 2026-11-16 以降、`/api/public/ingestion` に届いたトレースイベントを保存しません。未設定または `legacy` は従来の `/api/public/ingestion` を使い、セルフホスト v3 と、書き込みモードが `legacy`・`dual` の v4 向けです。既存の設定が自動で切り替わることはありません。切り替えはこの行を追加するか、セットアップに `--langfuse-transport otlp` を付けます。戻すときは `legacy` にするか、セットアップが残す `.env.bak-<時刻>` を復元します。保存の確認には `node ts/src/cli.ts verify claude <traceId>` を使います。詳細は [README.md](README.md#quick-start) を参照してください。
 
 ### エージェントのフックをインストール
 

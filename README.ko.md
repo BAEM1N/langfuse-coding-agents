@@ -56,7 +56,19 @@ TRACE_TO_LANGFUSE=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
+LANGFUSE_HOOK_TRANSPORT=otlp
 ```
+
+`LANGFUSE_HOOK_TRANSPORT`는 공통 Node 런타임이 Langfuse로 보내는 방식을 정합니다.
+
+| 값 | 전송 경로 | 대상 |
+|---|---|---|
+| `otlp` | `/api/public/otel/v1/traces` (OTLP/HTTP JSON, `x-langfuse-ingestion-version: 4`) | Langfuse Cloud, 자체 호스팅 v4 |
+| `legacy` 또는 미설정 | `/api/public/ingestion` | 자체 호스팅 v3, 쓰기 모드가 `legacy`·`dual`인 v4 |
+
+Langfuse Cloud는 2026-11-16부터 `/api/public/ingestion`으로 들어온 트레이스 이벤트를 저장하지 않으므로 Cloud 프로젝트에는 `otlp`가 필요합니다. 기존 설치의 전송 방식은 자동으로 바뀌지 않습니다. `doctor`와 설치 스크립트가 경고를 출력하면 직접 바꾸세요. 전환하려면 위 줄을 추가하거나 설치 스크립트에 `--langfuse-transport otlp`를 붙입니다. 되돌리려면 `legacy`로 바꾸거나, 설치 스크립트가 `.env` 옆에 남기는 `.env.bak-<시각>` 파일로 복원합니다. 한 프로젝트에 두 방식으로 동시에 보내면 턴이 두 번 저장됩니다.
+
+`otlp`에서는 턴이 끝난 뒤에 한 번 보내고, Langfuse가 받은 턴은 다시 보내지 않습니다. Langfuse v4는 같은 스팬 ID를 중복 제거하지 않기 때문입니다. 프롬프트와 도구 본문은 이전처럼 전송되며, 마스킹 후 필드당 8,000자로 잘립니다. 본문을 빼려면 `LANGFUSE_HOOK_CAPTURE_CONTENT=false`를 설정하세요. `tools/` 아래의 Python 단독 통합은 Langfuse SDK를 쓰므로 이 설정의 영향을 받지 않습니다.
 
 ### 2. 에이전트 훅 설치
 
@@ -77,9 +89,14 @@ sh scripts/setup.sh --agents claude,codex
 테스트 폴더의 `probe.txt`에 고유한 문구를 적고, 에이전트에게 파일을 읽어 그대로 답하도록 요청하세요. Langfuse의 새 트레이스에서 `모델 → 도구 → 모델` 순서, 도구 인수·결과, 모델별 입력·출력 토큰을 확인합니다. 표시되는 항목은 어댑터와 본문 수집 설정에 따라 달라집니다.
 
 ```sh
-node ts/src/cli.ts doctor claude
-node ts/src/cli.ts audit-langfuse claude --limit 10
+node ts/src/cli.ts doctor claude                     # 설정, 목적지, 최근 24시간 전송 결과
+node ts/src/cli.ts delivery claude                   # 실패·부분 전송·미확인 턴
+node ts/src/cli.ts verify claude <traceId>           # Langfuse에서 트레이스를 다시 조회
+node ts/src/cli.ts verify claude <traceId> --tempo http://127.0.0.1:13200
+node ts/src/cli.ts audit-langfuse claude --limit 10  # Cloud·v4는 --api v2, v3는 --api legacy
 ```
+
+`doctor`의 인증 성공이나 훅 로그의 접수 기록만으로는 트레이스가 저장됐다고 볼 수 없습니다. `verify`가 백엔드에서 트레이스를 읽어 보낸 내용과 비교합니다. `unconfirmed`로 표시된 턴(타임아웃, 응답 유실, 부분 거부)은 자동으로 다시 보내지 않습니다. `verify`로 확인한 뒤 실제로 없을 때만 `delivery claude clear <traceId>`를 실행하세요.
 
 Codex 설정에 프로젝트 키가 있다면 위 명령에서 `claude`를 `codex`로 바꾸세요. [Deep Agents SDK](tools/deepagents/)와 [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector)는 각각 콜백과 네이티브 OTLP를 사용합니다.
 
@@ -100,6 +117,8 @@ node scripts/start-grafana.mjs --tempo 'C:\path\tempo.exe' --grafana 'C:\path\gr
 node scripts/start-grafana.mjs --tempo /path/to/tempo --grafana /path/to/grafana-home
 sh scripts/setup.sh --agents claude,codex --collector /path/to/otelcol --tempo http://127.0.0.1:14328/v1/traces --capture-content
 ```
+
+기본값에서는 훅이 Langfuse로 직접 보내고, Tempo용으로 Collector의 `14318` 수신 포트를 씁니다. `--collector-route both`를 붙이면 훅은 Collector의 `14319` 포트로만 보내고 Collector가 Langfuse와 Tempo 양쪽으로 전달합니다. 이때 설치 스크립트가 직접 전송을 끄므로 프로젝트에는 턴이 한 번만 들어갑니다. `--collector-route tempo`로 되돌립니다. `both` 경로에서는 `--capture-content`를 줘야 본문이 Langfuse에 들어가며, Collector가 요청을 받았다고 해서 두 백엔드에 전달된 것은 아니므로 `verify`로 확인하세요.
 
 `--grafana`에는 압축을 푼 Grafana 폴더를, 설치 스크립트의 `--tempo`에는 OTLP 수신 URL을 지정합니다. 예제 Collector는 필요할 때 시작됩니다. 기존 Collector의 YAML을 바꿨다면 Collector를 재시작하세요. 지원되는 경로에서 프롬프트·응답·도구 본문까지 필요할 때 `--capture-content`를 사용합니다.
 

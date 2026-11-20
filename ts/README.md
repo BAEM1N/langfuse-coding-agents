@@ -10,8 +10,8 @@ This is an alternative to the Python hooks under `tools/`. It reads the same cre
 |---|---|---|
 | Runtime | Python 3.8+ + `langfuse` SDK 4.x | Node.js ≥ 22.18 only (runs `.ts` natively) |
 | Dependencies | pip / venv | none |
-| Transport | Langfuse Python SDK (OTel) | Langfuse public ingestion API (`/api/public/ingestion`) |
-| Duplicates on re-send | offset bookkeeping | deterministic ids → re-sending a turn **upserts** it |
+| Transport | Langfuse Python SDK (OTel) | `LANGFUSE_HOOK_TRANSPORT=otlp`: OTLP/HTTP to `/api/public/otel/v1/traces` (Langfuse Cloud, self-hosted v4). `legacy` or unset: `/api/public/ingestion` (self-hosted v3) |
+| Duplicates on re-send | offset bookkeeping | deterministic ids plus a per-destination delivery record. Legacy ingestion upserts a re-sent turn; over OTLP a confirmed turn is not sent again, because Langfuse v4 keeps both copies |
 | Secret redaction | — | built in (Langfuse/OpenAI/Anthropic/GitHub/GitLab/AWS/Slack keys, JWTs, private keys, WireGuard keys, `*_SECRET=` style values) |
 | Tool events | `PreToolUse` / `PostToolUse` buffer | reconstructed from the transcript — no per-tool hooks needed |
 | Codex | generic transcript parsing | native rollout parser (turn ids, per-response token usage, executed commands) |
@@ -30,6 +30,12 @@ trace  "Claude Code - Turn 3"            userId, sessionId, tags [agent, hostnam
 Usage keys follow Langfuse's price tables:
 - Claude: `input`, `output`, `cache_read_input_tokens`, `cache_creation_input_tokens`
 - Codex: `input` (excl. cached), `input_cached_tokens`, `output` (excl. reasoning), `output_reasoning_tokens`
+
+Each key counts its tokens once, and `total` is their sum. Over OTLP the same object is sent as
+`langfuse.observation.usage_details`. The `gen_ai.usage.*` attributes follow OpenTelemetry instead:
+`input_tokens` includes cached input and `output_tokens` includes reasoning, with
+`gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` and
+`coding_agent.usage.reasoning_tokens` as breakdowns. Do not add a breakdown to its total.
 
 ## Install
 
@@ -69,15 +75,24 @@ Optional:
 | `LANGFUSE_HOOK_DEBUG` | `false` | verbose log (`CC_LANGFUSE_DEBUG` also works) |
 | `LANGFUSE_TRACING_ENVIRONMENT` | — | Langfuse environment |
 | `LANGFUSE_HOOK_TIMEOUT_MS` | `15000` | HTTP timeout |
+| `LANGFUSE_HOOK_TRANSPORT` | `legacy` | `otlp` for Langfuse Cloud and self-hosted v4. Never changed for you |
+| `LANGFUSE_HOOK_CAPTURE_CONTENT` | — | `false` leaves prompt and tool bodies out of the direct OTLP route |
+| `CODING_AGENT_OTLP_FORWARDS_TO_LANGFUSE` | `false` | `true` when the OTLP endpoint is a Collector that also feeds Langfuse; direct export is then refused |
+| `LANGFUSE_HOOK_ALLOW_DUAL_ROUTE` | `false` | `true` to send direct and through such a Collector anyway (the project stores each turn twice) |
 
 ## Commands
 
 ```bash
-node src/cli.ts doctor                    # config, auth check, registered hooks, recent log
-node src/cli.ts backfill claude <file.jsonl> [--dry-run]   # send (or preview) a whole transcript
-node src/cli.ts backfill codex  <rollout.jsonl> [--session ID] [--dry-run]
+node src/cli.ts doctor                    # config, destinations, auth check, recent delivery results, hooks, log
+node src/cli.ts delivery claude           # turns not confirmed; `delivery claude clear <traceId>` allows a resend
+node src/cli.ts verify claude <traceId> [--tempo http://127.0.0.1:13200]   # read the trace back
+node src/cli.ts backfill claude <file.jsonl> --from <ISO> --to <ISO> [--dry-run]
+node src/cli.ts backfill codex  <rollout.jsonl> --from <ISO> --to <ISO> [--session ID] [--dry-run]
 node src/cli.ts uninstall all
 ```
+
+Backfill sends finished turns whose start time is inside the range, skips turns already confirmed, and
+reads Langfuse before writing over OTLP. `--dry-run` makes no network request.
 
 Logs: `~/.claude/state/langfuse_agent_hooks.log`, `~/.codex/state/langfuse_agent_hooks.log`.
 
@@ -89,7 +104,7 @@ The hook never writes to stdout and always exits 0 — a tracing failure can't b
 2. The transcript is read **from the start of the last turn seen before** (byte offset kept in `<agent home>/state/langfuse_agent_hooks_state.json`), so each run parses only new data.
 3. The adapter (`src/adapters/claude.ts`, `src/adapters/codex.ts`) turns transcript lines into agent-neutral `Turn` objects.
 4. `src/core/batch.ts` converts turns into ingestion events with deterministic ids, sanitizing every field.
-5. One batched POST to `/api/public/ingestion`. State advances only on success.
+5. `src/core/export.ts` sends each turn to every configured destination and records the outcome per trace and destination in `<agent home>/state/delivery/`. The read offset stops at the first turn a destination still needs, so a failed destination is retried without resending to one that succeeded. A hook failure is logged and never returned to the agent.
 
 Codex without a `transcript_path` in the payload: the rollout is located under `~/.codex/sessions/YYYY/MM/DD/rollout-*-<session_id>.jsonl`; if it can't be found, a minimal trace is built from the payload (`last_assistant_message`).
 

@@ -24,7 +24,10 @@ TRACE_TO_LANGFUSE=true
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
+LANGFUSE_HOOK_TRANSPORT=otlp
 ```
+
+`LANGFUSE_HOOK_TRANSPORT=otlp` 适用于 Langfuse Cloud 和自托管 v4，数据发送到 `/api/public/otel/v1/traces`。自 2026-11-16 起，Langfuse Cloud 不再保存发送到 `/api/public/ingestion` 的链路事件。不设置或设为 `legacy` 时仍使用 `/api/public/ingestion`，适用于自托管 v3，以及写入模式为 `legacy` 或 `dual` 的 v4。已有配置不会被自动切换。切换时添加上面这一行，或在安装脚本后加 `--langfuse-transport otlp`。回退时改为 `legacy`，或恢复安装脚本留下的 `.env.bak-<时间>` 文件。用 `node ts/src/cli.ts verify claude <traceId>` 确认数据已保存。详见 [README.md](README.md#quick-start)。
 
 ### 安装代理钩子
 
