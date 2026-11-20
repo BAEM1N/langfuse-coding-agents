@@ -63,6 +63,8 @@ function providerName(model: unknown, recorded: unknown): string | undefined {
   const known: Record<string, string> = { openai: 'openai', anthropic: 'anthropic', google: 'gcp.gemini', gemini: 'gcp.gemini',
     azure: 'azure.ai.openai', bedrock: 'aws.bedrock', vertex: 'gcp.vertex_ai', mistral: 'mistral_ai', xai: 'x_ai', groq: 'groq', deepseek: 'deepseek' };
   if (typeof recorded === 'string' && known[recorded.toLowerCase()]) return known[recorded.toLowerCase()];
+  // A provider the agent names but the conventions do not list (a gateway, a local server) is kept as recorded.
+  if (typeof recorded === 'string' && /^[\w.:-]{1,64}$/.test(recorded)) return recorded.toLowerCase();
   if (typeof model !== 'string') return undefined;
   if (/^claude/i.test(model)) return 'anthropic';
   if (/^(gpt|o\d|chatgpt|codex)/i.test(model)) return 'openai';
@@ -188,7 +190,8 @@ export function otlpPayload(events: IngestionEvent[], agent: string, options: Pa
         // A sub-agent run is its own agent; everything else belongs to the coding agent.
         'gen_ai.agent.name': meta?.subagent === true && typeof meta.agentType === 'string' ? meta.agentType
           : meta?.subagent === true && typeof meta.nickname === 'string' ? meta.nickname : agent,
-        'gen_ai.provider.name': generation ? providerName(body.model, (trace?.metadata as { modelProvider?: unknown } | undefined)?.modelProvider) : undefined,
+        'gen_ai.provider.name': generation
+          ? providerName(body.model, meta?.provider ?? (trace?.metadata as { modelProvider?: unknown } | undefined)?.modelProvider) : undefined,
         'user.id': generation || tool ? undefined : trace?.userId,
         'gen_ai.conversation.id': trace?.sessionId, 'gen_ai.request.model': body.model,
         'gen_ai.tool.name': tool ? body.name : undefined,
