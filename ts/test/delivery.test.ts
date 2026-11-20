@@ -629,3 +629,46 @@ test('a home that used legacy ingestion does not resend an earlier turn over OTL
   assert.equal(posts.length, 1);
   assert.equal(lf.requests.length - posts.length, reads, 'no project read for a turn that began after the change');
 });
+
+test('verify reads a trace back from Tempo, and export-events takes a turn from another integration', async (t) => {
+  const traceId = 'c5c113e297450e2e9606455dc35210c7';
+  const backend = await receiver(t, (request) => {
+    if (request.path.startsWith('/api/traces/')) {
+      // Tempo's trace-by-ID response: batches of scope spans.
+      return request.path.endsWith(traceId) ? { body: JSON.stringify({ batches: [{ scopeSpans: [{ spans: [{ spanId: 'a' }, { spanId: 'b' }, { spanId: 'c' }] }] }] }) }
+        : { status: 404 };
+    }
+    if (request.path.startsWith('/api/public/v2/observations')) return { body: JSON.stringify({ data: [{ id: 'o1', traceId, type: 'AGENT' }], meta: {} }) };
+    return {};
+  });
+  const box = sandbox(t, langfuse(backend.url));
+  const found = await cliProcess(box.env, ['verify', 'claude', traceId, '--tempo', backend.url]);
+  const report = JSON.parse(found.output);
+  assert.deepEqual(report.tempo, { stored: 3, verdict: 'STORED' });
+  assert.equal(report.langfuse.verdict, 'STORED');
+  assert.equal(found.code, 0);
+  const missing = JSON.parse((await cliProcess(box.env, ['verify', 'claude', 'f'.repeat(32), '--tempo', backend.url])).output);
+  assert.equal(missing.tempo.verdict, 'NOT FOUND');
+
+  // A finished turn handed over on stdin (the OpenCode plugin does this) goes out over OTLP once.
+  const events = [
+    { id: 'e1', timestamp: '2026-11-08T10:00:00.000Z', type: 'trace-create', body: { id: 'a'.repeat(32), timestamp: '2026-11-08T10:00:00.000Z',
+      name: 'OpenCode turn x', sessionId: 'ses', userId: 'u', tags: ['opencode', 'h'], metadata: { source: 'opencode' } } },
+    { id: 'e2', timestamp: '2026-11-08T10:00:00.000Z', type: 'agent-create', body: { id: 'root', traceId: 'a'.repeat(32), name: 'OpenCode',
+      startTime: '2026-11-08T10:00:00.000Z', endTime: '2026-11-08T10:00:02.000Z' } },
+  ];
+  const posts = () => backend.requests.filter(request => request.path === '/api/public/otel/v1/traces');
+  const handOver = () => new Promise<number | null>((resolve, reject) => {
+    const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !SETTINGS.includes(key)));
+    const child = spawn(process.execPath, [CLI, 'export-events', 'opencode'], { env: { ...clean, ...box.env, USERPROFILE: box.home, HOME: box.home }, stdio: ['pipe', 'ignore', 'ignore'] });
+    child.once('error', reject);
+    child.once('close', resolve);
+    child.stdin.end(JSON.stringify(events));
+  });
+  assert.equal(await handOver(), 0);
+  assert.equal(posts().length, 1);
+  assert.equal(posts()[0].headers['x-langfuse-ingestion-version'], '4');
+  assert.equal(backend.requests.filter(request => request.path === '/api/public/ingestion').length, 0, 'not the deprecated ingestion API');
+  assert.equal(await handOver(), 0);
+  assert.equal(posts().length, 1, 'handed over twice, stored once');
+});

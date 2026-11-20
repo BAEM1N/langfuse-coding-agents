@@ -1,0 +1,48 @@
+name: test
+
+# The shared runtime has no dependencies and runs TypeScript directly, so the
+# same suite is the check on every platform the hooks are installed on.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['22.18', '24']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --version
+      - run: npm test
+      # The Collector route test runs where a core-distribution binary is easy to fetch.
+      - name: Collector routes (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL -o /tmp/otelcol.tar.gz https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.165.0/otelcol_0.165.0_linux_amd64.tar.gz
+          mkdir -p /tmp/otelcol && tar -xzf /tmp/otelcol.tar.gz -C /tmp/otelcol
+          CODING_AGENT_TEST_OTELCOL=/tmp/otelcol/otelcol node --test test/collector.test.ts
+  typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm run typecheck

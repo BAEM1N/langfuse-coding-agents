@@ -219,9 +219,16 @@ from where each agent writes it.
 | Codex | the spawned thread's own rollout under `~/.codex/sessions` (Codex runs no hooks for it) | `session_id` in its `session_meta`, and `turn_attribution.parent_turn_id` on each of its turns |
 | Oh My Pi | `<session>/<TaskName>.jsonl`, the session each `task` runs in | the task name in the `task` tool call's arguments |
 
-Copilot CLI, Antigravity and OpenCode left no separate sub-agent records in the
-sessions examined here (Copilot CLI 1.0.114, Antigravity 1.5.13, OpenCode 1.19.6),
-so nothing is read for them. Goose sends its own spans.
+| OpenCode | the events of the session the `task` tool starts, which the plugin already receives | `parentID` on that session's `session.created` event |
+
+OpenCode is the exception to the two-view layout: a sub-agent's turns are traces
+of their own, placed in the session that started them and tagged `subagent`,
+with `parentSessionId` in the metadata, and the parent's `task` tool call
+carries `subagentSessionId`. Their tokens are counted there and nowhere else.
+
+Copilot CLI and Antigravity left no separate sub-agent records in the sessions
+examined here (Copilot CLI 1.0.114, Antigravity 1.5.13), so nothing is read for
+them. Goose sends its own spans.
 
 Each run appears twice, and its tokens are counted once.
 
