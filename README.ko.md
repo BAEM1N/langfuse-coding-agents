@@ -93,7 +93,7 @@ sh scripts/setup.sh --agents claude,codex
 테스트 폴더의 `probe.txt`에 고유한 문구를 적고, 에이전트에게 파일을 읽어 그대로 답하도록 요청하세요. Langfuse의 새 트레이스에서 `모델 → 도구 → 모델` 순서, 도구 인수·결과, 모델별 입력·출력 토큰을 확인합니다. 표시되는 항목은 어댑터와 본문 수집 설정에 따라 달라집니다.
 
 ```sh
-node ts/src/cli.ts selftest claude                   # 서브에이전트가 포함된 합성 턴을 보내고, 조회해 대조한 뒤 삭제
+node ts/src/cli.ts selftest all                      # Claude·Codex·OMP 형식의 합성 턴(서브에이전트 포함)을 보내고, 조회해 대조한 뒤 삭제
 node ts/src/cli.ts doctor claude                     # 설정, 목적지, 최근 24시간 전송 결과
 node ts/src/cli.ts delivery claude                   # 실패·부분 전송·미확인 턴
 node ts/src/cli.ts verify claude <traceId>           # Langfuse에서 트레이스를 다시 조회

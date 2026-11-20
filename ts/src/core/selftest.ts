@@ -10,11 +10,13 @@ import { nullLogger } from './log.ts';
 import { runHook } from './run.ts';
 
 // End-to-end check against the configured Langfuse project, with data made up
-// here: one turn that starts a sub-agent, plus a notification. It is sent the
-// way the hooks send, read back, compared, and deleted. Nothing from a real
-// session is involved, and the agent's own state is not touched.
+// here: one turn that starts a sub-agent, in the transcript format of the
+// chosen agent. It is sent the way that agent's integration sends, read back,
+// compared, and deleted. Nothing from a real session is involved, and the
+// agent's own state is not touched.
 
 const ENVIRONMENT = 'hook-selftest';
+export type SelfTestFormat = 'claude' | 'codex' | 'omp';
 
 interface StoredObservation {
   id: string;
@@ -23,14 +25,33 @@ interface StoredObservation {
   parentObservationId?: string | null;
   usageDetails?: Record<string, number>;
   metadata?: Record<string, unknown>;
-  level?: string;
 }
 interface StoredTrace { sessionId?: string; tags?: string[]; name?: string; metadata?: Record<string, unknown>; observations: StoredObservation[] }
 
-function synthetic(session: string) {
+interface Scenario {
+  tag: string;
+  turnKey: string;
+  runKey: string;
+  /** Name of the tool call the sub-agent must hang under. */
+  ownerTool: string;
+  subagent: string;
+  turnTypes: string;
+  innerTypes: string;
+  mainTokens: number;
+  agentTokens: number;
+  environment: Record<string, string>;
+  send(): Promise<string[] | undefined>;
+  /** Checks only this format can make. */
+  extra?(turn: StoredTrace, check: (name: string, ok: boolean, detail?: string) => void): void;
+}
+
+const lines = (rows: object[]) => rows.map(row => JSON.stringify(row)).join('\n') + '\n';
+
+function claudeScenario(dir: string, session: string): Scenario {
   const start = Date.now() - 120_000;
   const at = (ms: number) => new Date(start + ms).toISOString();
-  const main = [
+  const transcript = join(dir, 'session.jsonl');
+  writeFileSync(transcript, lines([
     { type: 'user', uuid: 'u1', promptId: 'p1', sessionId: session, timestamp: at(0), origin: { kind: 'human' }, promptSource: 'typed',
       turnPosition: { promptIndex: 1, turnIndex: 1 }, message: { role: 'user', content: 'Self-test prompt (synthetic)' } },
     { type: 'api-request', sessionId: session, timestamp: at(100) },
@@ -44,17 +65,135 @@ function synthetic(session: string) {
       model: 'claude-selftest', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Self-test complete (synthetic)' }],
       usage: { input_tokens: 6, output_tokens: 4, cache_read_input_tokens: 120 } } },
     { type: 'system', subtype: 'turn_duration', uuid: 's1', sessionId: session, timestamp: at(7600), durationMs: 7600 },
-  ];
+  ]));
   const side = (row: object) => ({ isSidechain: true, agentId: 'a1', sessionId: session, ...row });
-  const agent = [
+  mkdirSync(join(dir, 'session', 'subagents'), { recursive: true });
+  writeFileSync(join(dir, 'session', 'subagents', 'agent-a1.jsonl'), lines([
     side({ type: 'user', uuid: 'su1', timestamp: at(2000), message: { role: 'user', content: 'Synthetic sub-agent prompt' } }),
     side({ type: 'assistant', uuid: 'sa1', timestamp: at(3000), message: { id: 'msg_S1', role: 'assistant', model: 'claude-selftest-small', stop_reason: 'tool_use',
       content: [{ type: 'tool_use', id: 'toolu_s1', name: 'Glob', input: { pattern: '*' } }], usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 40 } } }),
     side({ type: 'user', uuid: 'su2', timestamp: at(3500), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_s1', content: 'synthetic.txt' }] } }),
     side({ type: 'assistant', uuid: 'sa2', timestamp: at(5000), message: { id: 'msg_S2', role: 'assistant', model: 'claude-selftest-small', stop_reason: 'end_turn',
       content: [{ type: 'text', text: 'Synthetic sub-agent answer' }], usage: { input_tokens: 9, output_tokens: 4 } } }),
+  ]));
+  writeFileSync(join(dir, 'session', 'subagents', 'agent-a1.meta.json'), JSON.stringify({ agentType: 'SelfTest', toolUseId: 'toolu_1', finished: true, spawnDepth: 1 }));
+  const payload = { session_id: session, transcript_path: transcript };
+  return { tag: 'claude-code', turnKey: 'p1', runKey: 'a1', ownerTool: 'Task', subagent: 'SelfTest',
+    turnTypes: 'AGENT,AGENT,EVENT,GENERATION,GENERATION,GENERATION,GENERATION,TOOL,TOOL', innerTypes: 'GENERATION,GENERATION,TOOL',
+    mainTokens: 135 + 130, agentTokens: 50 + 13, environment: { CLAUDE_CONFIG_DIR: join(dir, 'home') },
+    async send() {
+      const sent = await runHook('claude', { ...payload, hook_event_name: 'Stop' }, nullLogger);
+      await runHook('claude', { ...payload, hook_event_name: 'Notification', notification_type: 'selftest', message: 'synthetic notification' }, nullLogger);
+      return sent.destinations?.find(destination => destination.kind === 'langfuse-otlp')?.traces
+        .map(trace => `${trace.status}${trace.httpStatus ? ' HTTP ' + trace.httpStatus : ''}${trace.message ? ' ' + trace.message : ''}`);
+    },
+    extra(turn, check) {
+      const first = turn.observations.find(observation => observation.type === 'GENERATION' && observation.usageDetails?.cache_creation_input_tokens);
+      check('cache tokens kept as separate parts', first?.usageDetails?.input === 10 && first.usageDetails.cache_read_input_tokens === 100
+        && first.usageDetails.cache_creation_input_tokens === 20, JSON.stringify(first?.usageDetails));
+      const event = turn.observations.find(observation => observation.type === 'EVENT');
+      check('notification stored as an event observation', Boolean(event && /^Notification/.test(event.name ?? '')), event?.name);
+      check('adapter metadata kept on a model call', first?.metadata?.stopReason === 'tool_use' && first.metadata.requestId === 'req_selftest_1',
+        JSON.stringify({ stopReason: first?.metadata?.stopReason, requestId: first?.metadata?.requestId }));
+    } };
+}
+
+/** One Codex rollout: a turn with a model call, a tool call, and a final answer. */
+function codexRollout(thread: string, session: string, turn: string, start: number, parent?: { turn: string; nickname: string }, spawns?: string) {
+  let ordinal = 0;
+  const row = (ms: number, type: string, payload: object) => ({ timestamp: new Date(start + ms).toISOString(), ordinal: ordinal++, type, payload });
+  const call = 'call_' + thread;
+  const usage = (response: string, input: number, cached: number, output: number, reasoning: number) => ({ thread_id: thread, turn_id: turn,
+    session_id: session, response_id: response, usage: { input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0,
+      output_tokens: output, reasoning_output_tokens: reasoning, total_tokens: input + output } });
+  return [
+    row(0, 'session_meta', { id: thread, session_id: session, timestamp: new Date(start).toISOString(), cwd: tmpdir(), originator: 'selftest',
+      cli_version: 'selftest', model_provider: 'openai', ...(parent ? { source: { subagent: { thread_spawn: {} } }, thread_source: 'subagent',
+        parent_thread_id: session, agent_nickname: parent.nickname } : { source: 'exec' }) }),
+    row(10, 'event_msg', { type: 'task_started', turn_id: turn, turn_attribution: { turn_id: turn, turn_trigger: parent ? 'composer' : 'exec',
+      parent_turn_id: parent?.turn ?? null, root_turn_id: parent?.turn ?? turn } }),
+    row(20, 'turn_context', { turn_id: turn, cwd: tmpdir(), model: 'gpt-selftest' }),
+    row(30, 'event_msg', { type: 'item_completed', thread_id: thread, turn_id: turn, item: { type: 'UserMessage', id: 'um_' + thread,
+      content: [{ type: 'text', text: parent ? 'Synthetic thread prompt' : 'Self-test prompt (synthetic)' }] } }),
+    row(900, 'response_item', { type: 'message', status: 'completed', id: 'msg1_' + thread, role: 'assistant', phase: 'commentary',
+      content: [{ type: 'output_text', text: 'working (synthetic)' }] }),
+    row(1000, 'response_item', { type: 'custom_tool_call', id: 'ctc_' + thread, status: 'completed', call_id: call,
+      name: spawns ? 'spawn_agent' : 'exec', input: 'synthetic input' }),
+    ...(spawns ? [row(1010, 'event_msg', { type: 'item_completed', thread_id: thread, turn_id: turn,
+      item: { type: 'SubAgentActivity', id: call, agent_thread_id: spawns, kind: 'spawn' } })] : []),
+    row(1100, 'token_usage_record', usage('resp1_' + thread, 1000, 600, 30, 10)),
+    row(parent ? 2500 : 6000, 'response_item', { type: 'custom_tool_call_output', id: 'ctco_' + thread, call_id: call,
+      output: [{ type: 'input_text', text: 'synthetic output' }] }),
+    row(parent ? 3400 : 6900, 'event_msg', { type: 'item_completed', thread_id: thread, turn_id: turn, item: { type: 'AgentMessage', id: 'msg2_' + thread,
+      content: [{ type: 'Text', text: 'done (synthetic)' }], phase: 'final_answer' } }),
+    row(parent ? 3410 : 6910, 'response_item', { type: 'message', status: 'completed', id: 'msg2_' + thread, role: 'assistant', phase: 'final_answer',
+      content: [{ type: 'output_text', text: 'done (synthetic)' }] }),
+    row(parent ? 3500 : 7000, 'token_usage_record', usage('resp2_' + thread, 1200, 800, 20, 0)),
+    row(parent ? 3600 : 7100, 'event_msg', { type: 'task_complete', turn_id: turn, root_turn_id: parent?.turn ?? turn, last_agent_message: 'done (synthetic)',
+      duration_ms: parent ? 3600 : 7100 }),
   ];
-  return { main, agent, mainTokens: 135 + 130, agentTokens: 50 + 13 };
+}
+
+function codexScenario(dir: string, session: string): Scenario {
+  const start = Date.now() - 120_000;
+  const day = new Date(start).toISOString().slice(0, 10).split('-');
+  const sessions = join(dir, 'home', 'sessions', ...day);
+  mkdirSync(sessions, { recursive: true });
+  const stamp = new Date(start).toISOString().slice(0, 19).replace(/:/g, '-');
+  const thread = session + '-thread';
+  const parent = join(sessions, `rollout-${stamp}-${session}.jsonl`);
+  writeFileSync(parent, lines(codexRollout(session, session, 'turn-main', start, undefined, thread)));
+  writeFileSync(join(sessions, `rollout-${stamp}-${thread}.jsonl`),
+    lines(codexRollout(thread, session, 'turn-thread', start + 1500, { turn: 'turn-main', nickname: 'selftest-thread' })));
+  return { tag: 'codex', turnKey: 'turn-main', runKey: `${thread}:turn-thread`, ownerTool: 'spawn_agent', subagent: 'selftest-thread',
+    turnTypes: 'AGENT,AGENT,GENERATION,GENERATION,GENERATION,GENERATION,TOOL,TOOL', innerTypes: 'GENERATION,GENERATION,TOOL',
+    mainTokens: 1030 + 1220, agentTokens: 1030 + 1220, environment: { CODEX_HOME: join(dir, 'home') },
+    async send() {
+      const sent = await runHook('codex', { hook_event_name: 'Stop', session_id: session, transcript_path: parent }, nullLogger);
+      return sent.destinations?.find(destination => destination.kind === 'langfuse-otlp')?.traces
+        .map(trace => `${trace.status}${trace.httpStatus ? ' HTTP ' + trace.httpStatus : ''}${trace.message ? ' ' + trace.message : ''}`);
+    },
+    extra(turn, check) {
+      const reasoning = turn.observations.find(observation => observation.usageDetails?.output_reasoning_tokens);
+      check('reasoning and cached tokens kept as separate parts', reasoning?.usageDetails?.input === 400 && reasoning.usageDetails.input_cached_tokens === 600
+        && reasoning.usageDetails.output === 20 && reasoning.usageDetails.output_reasoning_tokens === 10 && reasoning.usageDetails.total === 1030,
+        JSON.stringify(reasoning?.usageDetails));
+    } };
+}
+
+function ompScenario(dir: string, session: string): Scenario {
+  const start = Date.now() - 120_000;
+  const home = join(dir, 'home');
+  const folder = join(home, 'sessions', '-selftest', new Date(start).toISOString().replace(/[:.]/g, '-') + '_' + session);
+  mkdirSync(folder, { recursive: true });
+  const message = (id: string, parentId: string | null, body: object) => ({ type: 'message', id, parentId, message: body });
+  writeFileSync(join(folder, 'SelfTestTask.jsonl'), lines([
+    { type: 'session', id: session + '-task', parentSession: session },
+    message('tu', null, { role: 'user', content: 'Synthetic task prompt', timestamp: start + 2000 }),
+    message('tg', 'tu', { role: 'assistant', timestamp: start + 2100, completedAt: start + 4000, model: 'selftest-model', provider: 'selftest',
+      content: [{ type: 'text', text: 'Synthetic task answer' }], usage: { input: 30, output: 4, totalTokens: 34 }, stopReason: 'stop' }),
+  ]));
+  const branch = [
+    { type: 'session', id: session },
+    message('u', null, { role: 'user', content: 'Self-test prompt (synthetic)', timestamp: start }),
+    message('g', 'u', { role: 'assistant', timestamp: start + 100, completedAt: start + 1500, model: 'selftest-model', provider: 'selftest',
+      usage: { input: 9, output: 1, totalTokens: 10 }, stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 'call-task', name: 'task', arguments: { tasks: [{ name: 'SelfTestTask', task: 'synthetic' }] } }] }),
+    message('r', 'g', { role: 'toolResult', toolCallId: 'call-task', toolName: 'task', timestamp: start + 5000, content: 'synthetic task result' }),
+    message('e', 'r', { role: 'assistant', timestamp: start + 5100, completedAt: start + 6500, model: 'selftest-model', provider: 'selftest',
+      usage: { input: 12, output: 2, totalTokens: 14 }, stopReason: 'stop', content: [{ type: 'text', text: 'Self-test complete (synthetic)' }] }),
+  ];
+  return { tag: 'oh-my-pi', turnKey: 'u', runKey: 'SelfTestTask:tu', ownerTool: 'task', subagent: 'SelfTestTask',
+    turnTypes: 'AGENT,AGENT,GENERATION,GENERATION,GENERATION,TOOL', innerTypes: 'GENERATION', mainTokens: 10 + 14, agentTokens: 34,
+    environment: { PI_CODING_AGENT_DIR: home },
+    async send() {
+      // The extension is what Oh My Pi loads; drive it the way the host does.
+      const { default: extension } = await import('../omp-extension.ts');
+      const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<void>> = {};
+      extension({ on: (name, handler) => { handlers[name] = handler as never; } });
+      await handlers.agent_end?.({}, { sessionManager: { getSessionId: () => session, getBranch: () => branch } });
+      return undefined;
+    } };
 }
 
 async function readBack(client: LangfuseClient, api: 'v2' | 'legacy', traceId: string): Promise<StoredTrace | undefined> {
@@ -75,6 +214,8 @@ async function readBack(client: LangfuseClient, api: 'v2' | 'legacy', traceId: s
 }
 
 export interface SelfTestOptions {
+  /** Whose transcript format and integration to exercise. */
+  format?: SelfTestFormat;
   /** Leave the two synthetic traces in the project to look at. */
   keep: boolean;
   api?: 'v2' | 'legacy';
@@ -84,18 +225,14 @@ export interface SelfTestOptions {
 
 export async function selfTest(cfg: Config, options: SelfTestOptions) {
   if (!cfg.publicKey || !cfg.secretKey) throw new Error('missing Langfuse keys');
-  const session = 'hook-selftest-' + Date.now();
+  const format = options.format ?? 'claude';
+  const session = `hook-selftest-${format}-${Date.now()}`;
   const dir = mkdtempSync(join(tmpdir(), 'langfuse-hooks-selftest-'));
-  const transcript = join(dir, 'session.jsonl');
-  const data = synthetic(session);
-  writeFileSync(transcript, data.main.map(row => JSON.stringify(row)).join('\n') + '\n');
-  mkdirSync(join(dir, 'session', 'subagents'), { recursive: true });
-  writeFileSync(join(dir, 'session', 'subagents', 'agent-a1.jsonl'), data.agent.map(row => JSON.stringify(row)).join('\n') + '\n');
-  writeFileSync(join(dir, 'session', 'subagents', 'agent-a1.meta.json'), JSON.stringify({ agentType: 'SelfTest', toolUseId: 'toolu_1', finished: true, spawnDepth: 1 }));
+  const scenario = format === 'codex' ? codexScenario(dir, session) : format === 'omp' ? ompScenario(dir, session) : claudeScenario(dir, session);
 
-  // The hook reads its settings from the environment. Point it at a throwaway
-  // home so the real read positions and delivery records stay as they are.
-  const settings: Record<string, string> = { CLAUDE_CONFIG_DIR: join(dir, 'home'), LANGFUSE_AGENT_HOOKS_CONFIG_DIR: join(dir, 'shared'),
+  // The integration reads its settings from the environment. Point it at a
+  // throwaway home so the real read positions and delivery records stay as they are.
+  const settings: Record<string, string> = { ...scenario.environment, LANGFUSE_AGENT_HOOKS_CONFIG_DIR: join(dir, 'shared'),
     TRACE_TO_LANGFUSE: 'true', LANGFUSE_PUBLIC_KEY: cfg.publicKey, LANGFUSE_SECRET_KEY: cfg.secretKey, LANGFUSE_BASE_URL: cfg.baseUrl,
     CC_LANGFUSE_PUBLIC_KEY: '', CC_LANGFUSE_SECRET_KEY: '', CC_LANGFUSE_BASE_URL: '', CC_LANGFUSE_USER_ID: '',
     LANGFUSE_HOOK_TRANSPORT: 'otlp', CODING_AGENT_OTLP_ENABLED: 'false', CODING_AGENT_GITHUB_METADATA: 'false',
@@ -105,29 +242,26 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
   Object.assign(process.env, settings);
   const checks: Array<{ check: string; ok: boolean; detail?: string }> = [];
   const check = (name: string, ok: boolean, detail?: string) => { checks.push({ check: name, ok, detail: ok ? undefined : detail }); };
-  const turnId = traceIdFor('claude-code', session, 'p1');
-  const runId = subagentTraceIdFor('claude-code', session, 'a1');
+  const turnId = traceIdFor(scenario.tag, session, scenario.turnKey);
+  const runId = subagentTraceIdFor(scenario.tag, session, scenario.runKey);
   const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
     timeoutMs: Math.max(cfg.timeoutMs, 30000), logger: nullLogger });
   let api: 'v2' | 'legacy' | undefined = options.api;
   let deleted: boolean | undefined;
   try {
-    const payload = { session_id: session, transcript_path: transcript };
-    const sent = await runHook('claude', { ...payload, hook_event_name: 'Stop' }, nullLogger);
-    await runHook('claude', { ...payload, hook_event_name: 'Notification', notification_type: 'selftest', message: 'synthetic notification' }, nullLogger);
-    const outcome = sent.destinations?.find(destination => destination.kind === 'langfuse-otlp');
-    const statuses = outcome?.traces.map(trace => trace.status) ?? [];
-    check('accepted by the OTLP endpoint', statuses.length === 2 && statuses.every(status => status === 'delivered'),
-      outcome?.traces.map(trace => `${trace.status}${trace.httpStatus ? ' HTTP ' + trace.httpStatus : ''}${trace.message ? ' ' + trace.message : ''}`).join('; ') || 'nothing was sent');
-
+    const statuses = await scenario.send();
+    if (statuses) {
+      check('accepted by the OTLP endpoint', statuses.length === 2 && statuses.every(status => status === 'delivered'), statuses.join('; ') || 'nothing was sent');
+    }
     let turn: StoredTrace | undefined;
     let run: StoredTrace | undefined;
+    const expected = scenario.turnTypes.split(',').length;
     const deadline = Date.now() + (options.waitMs ?? 90_000);
     do {
       const read = await withReadApi(api, async chosen => [await readBack(client, chosen, turnId), await readBack(client, chosen, runId)] as const);
       api = read.api;
       [turn, run] = read.value;
-      if (turn && run && turn.observations.length >= 9 && run.observations.length >= 4) break;
+      if (turn && run && turn.observations.length >= expected) break;
       await wait(3000);
     } while (Date.now() < deadline);
 
@@ -137,32 +271,24 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
       const observations = turn.observations;
       const byId = new Map(observations.map(observation => [observation.id, observation]));
       const types = (list: StoredObservation[]) => list.map(observation => observation.type).sort().join(',');
-      check('turn: one root agent, the sub-agent, four model calls, two tools, one event',
-        types(observations) === 'AGENT,AGENT,EVENT,GENERATION,GENERATION,GENERATION,GENERATION,TOOL,TOOL', types(observations));
+      check('turn: root agent, sub-agent, and every model call, tool and event', types(observations) === scenario.turnTypes, types(observations));
       check('no observation stored twice', new Set(observations.map(observation => observation.id)).size === observations.length);
-      const agent = observations.find(observation => observation.name === 'Subagent: SelfTest');
-      const call = observations.find(observation => observation.type === 'TOOL' && observation.name === 'Task');
+      const agent = observations.find(observation => observation.name === 'Subagent: ' + scenario.subagent);
+      const call = observations.find(observation => observation.type === 'TOOL' && observation.name === scenario.ownerTool);
       check('sub-agent sits under the tool call that started it', Boolean(agent && call && agent.parentObservationId === call.id),
         'parent is ' + (byId.get(agent?.parentObservationId ?? '')?.name ?? 'missing'));
       const inner = observations.filter(observation => agent && observation.parentObservationId === agent.id);
-      check('sub-agent model calls and tool sit under the sub-agent', types(inner) === 'GENERATION,GENERATION,TOOL', types(inner));
+      check('sub-agent model calls and tools sit under the sub-agent', types(inner) === scenario.innerTypes, types(inner));
       const tokens = observations.filter(observation => observation.type === 'GENERATION')
         .reduce((sum, observation) => sum + (observation.usageDetails?.total ?? 0), 0);
-      check(`turn tokens are main ${data.mainTokens} + sub-agent ${data.agentTokens}`, tokens === data.mainTokens + data.agentTokens, 'stored ' + tokens);
-      const first = observations.find(observation => observation.type === 'GENERATION' && observation.parentObservationId !== agent?.id
-        && observation.usageDetails?.cache_creation_input_tokens);
-      check('cache tokens kept as separate parts', first?.usageDetails?.input === 10 && first.usageDetails.cache_read_input_tokens === 100
-        && first.usageDetails.cache_creation_input_tokens === 20, JSON.stringify(first?.usageDetails));
-      const event = observations.find(observation => observation.type === 'EVENT');
-      check('notification stored as an event observation', Boolean(event && /^Notification/.test(event.name ?? '')), event?.name);
-      const tool = inner.find(observation => observation.type === 'TOOL');
-      check('tool call ID and neighbouring model calls kept as metadata', tool?.metadata?.toolCallId === 'toolu_s1'
+      check(`turn tokens are main ${scenario.mainTokens} + sub-agent ${scenario.agentTokens}`, tokens === scenario.mainTokens + scenario.agentTokens, 'stored ' + tokens);
+      const tool = inner.find(observation => observation.type === 'TOOL') ?? call;
+      check('tool call ID and neighbouring model calls kept as metadata', typeof tool?.metadata?.toolCallId === 'string'
         && byId.get(String(tool.metadata.issuedByObservationId))?.type === 'GENERATION'
         && byId.get(String(tool.metadata.consumedByObservationId))?.type === 'GENERATION', JSON.stringify(tool?.metadata).slice(0, 200));
-      check('adapter metadata kept on a model call', first?.metadata?.stopReason === 'tool_use' && first.metadata.requestId === 'req_selftest_1',
-        JSON.stringify({ stopReason: first?.metadata?.stopReason, requestId: first?.metadata?.requestId }));
-      check('session and agent tag', turn.sessionId === session && (turn.tags ?? []).includes('claude-code'), JSON.stringify({ sessionId: turn.sessionId, tags: turn.tags }));
+      check('session and agent tag', turn.sessionId === session && (turn.tags ?? []).includes(scenario.tag), JSON.stringify({ sessionId: turn.sessionId, tags: turn.tags }));
       check('link from the turn to the sub-agent trace', agent?.metadata?.subagentTraceId === runId, String(agent?.metadata?.subagentTraceId));
+      scenario.extra?.(turn, check);
     }
     if (run) {
       const usage = run.observations.filter(observation => observation.usageDetails && Object.keys(observation.usageDetails).length);
@@ -180,7 +306,7 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
     }
     rmSync(dir, { force: true, recursive: true, maxRetries: 3 });
   }
-  return { ok: checks.every(item => item.ok), server: cfg.baseUrl, readApi: api, environment: ENVIRONMENT, session,
+  return { ok: checks.every(item => item.ok), format, server: cfg.baseUrl, readApi: api, environment: ENVIRONMENT, session,
     traces: { turn: turnId, subagent: runId }, kept: options.keep, deleted, passed: checks.filter(item => item.ok).length,
     failed: checks.filter(item => !item.ok).length, checks };
 }

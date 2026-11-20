@@ -9,7 +9,7 @@
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
 //   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL] [--reconcile]
 //   node src/cli.ts coverage <claude|codex> [--since ISO] [--until ISO] [--deep N]
-//   node src/cli.ts selftest [agent] [--keep]     (sends a synthetic turn to the project, checks it, deletes it)
+//   node src/cli.ts selftest [claude|codex|omp|all] [--keep]   (sends a synthetic turn to the project, checks it, deletes it)
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> --from ISO --to ISO [--session ID] [--dry-run]
 
@@ -294,11 +294,16 @@ async function cmdCoverage(agent: string | undefined, args: string[]): Promise<v
  */
 async function cmdSelfTest(agent: string | undefined, args: string[]): Promise<void> {
   const target = agent && !agent.startsWith('--') ? agent : 'claude';
-  if (!TRACE_AGENTS.includes(target as TraceAgentName)) throw new Error('selftest expects an agent whose settings hold the project keys');
-  const cfg = loadConfig(target as TraceAgentName, { ...process.env });
-  const report = await selfTest(cfg, { keep: !!flag(args, 'keep'), api: readApi(args) });
-  console.log(JSON.stringify(report, null, 2));
-  if (!report.ok) process.exitCode = 1;
+  const formats = target === 'all' ? ['claude', 'codex', 'omp'] as const
+    : target === 'claude' || target === 'codex' || target === 'omp' ? [target] as const : undefined;
+  if (!formats) throw new Error('selftest expects claude, codex, omp or all');
+  for (const format of formats) {
+    // Keys come from that agent's own settings, as they do when its integration runs.
+    const cfg = loadConfig(format, { ...process.env });
+    const report = await selfTest(cfg, { format, keep: !!flag(args, 'keep'), api: readApi(args) });
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.ok) process.exitCode = 1;
+  }
 }
 
 function timeFlag(args: string[], name: string): string | undefined {

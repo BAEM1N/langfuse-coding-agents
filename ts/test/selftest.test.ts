@@ -59,15 +59,15 @@ async function fakeLangfuse(t: TestContext, mode: 'v2' | 'legacy', corrupt?: (ob
   return { config: loadConfig('claude', env), traces, deleted };
 }
 
-for (const mode of ['v2', 'legacy'] as const) {
-  test(`selftest passes against a server that offers the ${mode} read API, and cleans up`, async (t) => {
+for (const [mode, format] of [['v2', 'claude'], ['legacy', 'claude'], ['legacy', 'codex'], ['v2', 'codex'], ['legacy', 'omp']] as const) {
+  test(`selftest (${format} format) passes against a server that offers the ${mode} read API, and cleans up`, async (t) => {
     const before = { home: process.env.CLAUDE_CONFIG_DIR, transport: process.env.LANGFUSE_HOOK_TRANSPORT };
     const { config, traces, deleted } = await fakeLangfuse(t, mode);
-    const report = await selfTest(config, { keep: false, waitMs: 5000 });
+    const report = await selfTest(config, { format, keep: false, waitMs: 5000 });
     assert.deepEqual(report.checks.filter(item => !item.ok), [], 'every check passes');
     assert.equal(report.ok, true);
     assert.equal(report.readApi, mode);
-    assert.ok(report.passed >= 15);
+    assert.ok(report.passed >= 11);
     assert.deepEqual(deleted.sort(), [report.traces.turn, report.traces.subagent].sort(), 'both synthetic traces are deleted');
     assert.equal(traces.size, 0);
     assert.equal(report.deleted, true);

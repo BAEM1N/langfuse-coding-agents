@@ -295,8 +295,9 @@ attributes `coding_agent.input` and `coding_agent.output`.
 
 ## Self-test
 
-`node ts/src/cli.ts selftest claude` checks the whole path against your own
-project. It writes a made-up turn (a prompt, a sub-agent run, a notification)
+`node ts/src/cli.ts selftest all` checks the whole path against your own
+project, once in each transcript format the shared runtime reads sub-agents
+from (`claude`, `codex`, `omp`; name one to run only that). It writes a made-up turn (a prompt, a sub-agent run, a notification)
 to a throwaway directory, sends it the way the hooks do, reads both traces back
 and compares them: observation types and nesting, token totals, cache tokens,
 the event, tool call IDs, adapter metadata, session and tags, and that the
