@@ -601,6 +601,17 @@ def _export_otlp(events: List[Dict[str, Any]]) -> bool:
         return False
 
 
+def _export_shared(events: List[Dict[str, Any]]) -> bool:
+    """Hand a finished turn to the shared Node runtime, which owns every destination."""
+    try:
+        result = subprocess.run(["node", _shared_cli(), "export-events", "opencode"], input=json.dumps(events).encode(),
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _log("DEBUG", f"shared export failed: {type(exc).__name__}")
+        return False
+
+
 def _export_langfuse(events: List[Dict[str, Any]]) -> bool:
     base_url = os.environ.get("LANGFUSE_BASE_URL", "").strip().rstrip("/")
     public_key = os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip()
@@ -651,8 +662,9 @@ def _emit_turn_trace(state: Dict[str, Any], session_id: str, parent_id: str, mes
             endTime=ended.isoformat() if ended else None, input=carried,
             output={"text": _truncate(final), "toolCalls": [
                 {"id": t["call_id"], "name": t["name"], "input": _truncate(t["input"])} for t in tools]},
+            # Each key counts its tokens once; reasoning uses the key the other adapters use.
             usageDetails={"input": usage.get("input", 0), "output": usage.get("output", 0),
-                          "total": usage.get("total", 0), "reasoning": usage.get("reasoning", 0),
+                          "total": usage.get("total", 0), "output_reasoning_tokens": usage.get("reasoning", 0),
                           "input_cached_tokens": cache.get("read", 0), "input_cache_creation": cache.get("write", 0)},
             metadata={"provider": info.get("providerID"), "messageId": info.get("id"),
                       "finish": info.get("finish"), "reasoning": [_truncate(r["text"]) for r in reasoning]})
@@ -667,31 +679,50 @@ def _emit_turn_trace(state: Dict[str, Any], session_id: str, parent_id: str, mes
                 input=_truncate(tool["input"]), output=_truncate(tool["output"]),
                 level="ERROR" if tool["status"] == "error" else None,
                 metadata={"toolCallId": call_id, "issuedByObservationId": generation,
-                          "consumedByObservationId": generation_ids[index + 1] if index + 1 < len(messages) else None})
+                          "consumedByObservationId": generation_ids[index + 1] if index + 1 < len(messages) else None,
+                          # The task tool reports the session it ran the sub-agent in.
+                          "subagentSessionId": _as_dict(tool.get("meta")).get("sessionId") or _as_dict(tool.get("meta")).get("sessionID")})
             carried.append({"role": "tool", "call_id": call_id, "content": _truncate(tool["output"])})
 
-    title = f"OpenCode turn {parent_id}"
+    # A sub-agent runs in a session of its own. Its turns go into the session
+    # that started it (following the chain to the top), tagged so they can be
+    # told apart; their tokens are counted here and nowhere else.
+    parents = _as_dict(state.get("session_parents"))
+    root_session, seen = session_id, set()
+    while parents.get(root_session) and root_session not in seen:
+        seen.add(root_session)
+        root_session = str(parents[root_session])
+    is_subagent = root_session != session_id
+    title = f"OpenCode {'subagent ' if is_subagent else ''}turn {parent_id}"
     start_time = first.isoformat() if first else now
     end_time = completed.isoformat() if completed else None
     input_data, output_data = _truncate(prompt), _truncate(final)
     metadata = {"source": "opencode", "generationCount": len(messages), "device": _device()}
+    if is_subagent:
+        metadata.update({"subagent": True, "subagentSessionId": session_id, "parentSessionId": parents.get(session_id)})
     github = _github_context()
     if github:
         metadata["github"] = github
-    add("trace-create", id=trace_id, name=title, sessionId=session_id,
+    add("trace-create", id=trace_id, name=title, sessionId=root_session,
         userId=_user_id(), timestamp=start_time, environment=os.environ.get("LANGFUSE_TRACING_ENVIRONMENT"),
-        input=input_data, output=output_data, tags=["opencode", socket.gethostname()],
+        input=input_data, output=output_data,
+        tags=["opencode", socket.gethostname()] + (["subagent"] if is_subagent else []),
         metadata=metadata)
-    add("agent-create", id=root_id, traceId=trace_id, name="OpenCode", startTime=start_time,
-        endTime=end_time, input=input_data, output=output_data)
+    add("agent-create", id=root_id, traceId=trace_id, name="OpenCode subagent" if is_subagent else "OpenCode",
+        startTime=start_time, endTime=end_time, input=input_data, output=output_data)
 
     batch = events[-2:] + events[:-2]
+    if Path(_shared_cli()).is_file():
+        # The shared runtime sends to Langfuse over OTLP and to any OTLP receiver,
+        # and keeps delivery state so a turn is not stored twice.
+        return _export_shared(batch)
+    # No shared runtime on this machine: the ingestion API is all this script can
+    # reach by itself. Langfuse has deprecated it; install the shared runtime.
+    _log("INFO", "shared runtime not found: using the deprecated ingestion API")
     with ThreadPoolExecutor(max_workers=2) as pool:
         sends = []
         if os.environ.get("TRACE_TO_LANGFUSE", "").strip().lower() == "true":
             sends.append(pool.submit(_export_langfuse, batch))
-        if _otlp_enabled():
-            sends.append(pool.submit(_export_otlp, batch))
         return all([future.result() for future in sends])
 
 
@@ -899,6 +930,16 @@ def main() -> None:
         elif event_name in {"message.removed", "message.part.removed"}:
             # Best-effort cleanup events can be handled later if needed.
             pass
+
+        if event_name == "session.created":
+            # A session started by the task tool names its parent. Remember it so
+            # the sub-agent's turns are grouped with the session that started them.
+            created = _as_dict(_event_props(payload).get("info"))
+            parent_session = str(created.get("parentID") or created.get("parentId") or "")
+            if parent_session and parent_session != session_id:
+                parents = _as_dict(state.get("session_parents"))
+                parents[session_id] = parent_session
+                state["session_parents"] = parents
 
         if event_name in {"session.created", "session.idle", "session.error", "session.compacted"}:
             event_dt = _event_captured_at(payload)

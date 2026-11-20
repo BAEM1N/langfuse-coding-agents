@@ -431,6 +431,17 @@ async function main(): Promise<void> {
       }
       return;
     }
+    case 'export-events': {
+      // A finished turn built by an integration that is not written in TypeScript
+      // (the OpenCode plugin). Every configured destination gets it, with delivery state.
+      if (a1 !== 'opencode') throw new Error('export-events expects opencode');
+      const config = loadConfig(a1, { ...process.env });
+      if (!canExport(config)) return;
+      const events = JSON.parse(await readStdin());
+      if (!Array.isArray(events)) throw new Error('Expected a trace event array');
+      if (!(await exportEvents(config, events, createLogger(logPath(config), config.debug))).ok) process.exitCode = 1;
+      return;
+    }
     case 'export-otlp': {
       if (a1 !== 'opencode') throw new Error('export-otlp expects opencode');
       const config = loadConfig(a1, { ...process.env });
