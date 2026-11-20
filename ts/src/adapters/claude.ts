@@ -119,17 +119,23 @@ function finalText(t: TurnAcc): string | undefined {
 
 export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions): Turn[] {
   const useTurnPosition = entries.some((e) => e.value?.type === 'user' && e.value.turnPosition);
+  // After a context compaction the transcript repeats the previous prompt's ID
+  // and turn position on a row that carries the summary. It is not a new prompt:
+  // treating it as one produced a second turn with the same trace ID.
   const isBoundary = (v: any) =>
-    v.type === 'user' && !v.isMeta && !v.isSidechain && (useTurnPosition ? !!v.turnPosition : isHumanPromptLegacy(v));
+    v.type === 'user' && !v.isMeta && !v.isSidechain && !v.isCompactSummary
+    && (useTurnPosition ? !!v.turnPosition : isHumanPromptLegacy(v));
 
   const turns: TurnAcc[] = [];
   let cur: TurnAcc | undefined;
+  let requestTime: string | undefined;
 
   for (const { offset, value: v } of entries) {
     if (!v || typeof v !== 'object' || v.isSidechain) continue;
     const ts: string | undefined = v.timestamp;
 
     if (isBoundary(v)) {
+      requestTime = undefined;
       if (cur) cur.complete = true; // a newer prompt means the previous turn ended
       const prompt = promptOf(v.message?.content);
       cur = {
@@ -161,16 +167,33 @@ export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions)
     }
     if (!cur) continue;
 
+    if (v.type === 'user' && v.isCompactSummary) {
+      // Keep the fact, not the summary text: it is neither a prompt nor model input the user wrote.
+      cur.events.push({ key: v.uuid ?? `compact-${offset}`, name: 'Context compacted', time: ts ?? cur.lastTime });
+      continue;
+    }
+
+    if (v.type === 'api-request') {
+      // When the model request went out: the start of the next model call.
+      if (ts) requestTime = ts;
+      continue;
+    }
+
     if (v.type === 'assistant' && v.message) {
       const m = v.message;
       const key: string = m.id ?? v.uuid ?? `gen-${offset}`;
       let g = cur.gens.get(key);
       if (!g) {
+        // Start at the request if the transcript recorded one after the last
+        // conversation row, else at that row. Never after this call's own output.
+        let start = requestTime && requestTime >= cur.lastTime ? requestTime : cur.lastTime;
+        if (ts && start > ts) start = ts;
+        requestTime = undefined;
         g = {
           key,
           model: m.model,
-          startTime: cur.lastTime,
-          endTime: ts ?? cur.lastTime,
+          startTime: start,
+          endTime: ts ?? start,
           blocks: [],
           requestId: v.requestId,
           input: cur.pendingInput,
@@ -186,7 +209,7 @@ export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions)
       }
       if (m.usage) g.usage = m.usage;
       if (m.stop_reason) g.stopReason = m.stop_reason;
-      if (ts) g.endTime = ts;
+      if (ts && ts > g.endTime) g.endTime = ts;
       if (m.model === '<synthetic>') g.model = undefined;
     } else if (v.type === 'user') {
       const c = v.message?.content;
@@ -218,7 +241,11 @@ export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions)
         cur.events.push({ key: v.uuid ?? `sys-${offset}`, name: `System: ${v.subtype ?? 'error'}`, time: ts ?? cur.lastTime, input: v.content, level: 'ERROR' });
       }
     }
-    if (ts && ts > cur.lastTime) cur.lastTime = ts;
+    // Only conversation rows move the clock. Bookkeeping rows (file history,
+    // attachments, away summaries) are written out of order or long afterwards,
+    // and used to push a model call's start past its own end.
+    const conversation = v.type === 'user' || v.type === 'assistant' || (v.type === 'system' && v.subtype === 'turn_duration');
+    if (ts && conversation && ts > cur.lastTime) cur.lastTime = ts;
   }
 
   return turns.map((t) => finalize(t));
