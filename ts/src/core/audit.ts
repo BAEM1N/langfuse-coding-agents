@@ -144,32 +144,120 @@ export function auditStoredTrace(trace: StoredTrace) {
   return { agent, tools, toolsWithoutIds, toolLinks: linked.size, reversedSpans, outOfOrderToolLinks, coverage, counts };
 }
 
-export async function auditLangfuse(client: LangfuseClient, limit: number) {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+type AgentGroups = Record<string, { traces: number; tools: number; toolLinks: number; toolsWithoutIds: number;
+  reversedSpans: number; outOfOrderToolLinks: number; coverage: ReturnType<typeof auditStoredTrace>['coverage']; counts: Record<string, number> }>;
+
+function addTrace(groups: AgentGroups, trace: StoredTrace): void {
+  const row = auditStoredTrace(trace);
+  const group = groups[row.agent];
+  if (!group) {
+    const { agent, ...summary } = row;
+    groups[agent] = { traces: 1, ...summary };
+    return;
+  }
+  group.traces++;
+  group.tools += row.tools;
+  group.toolLinks += row.toolLinks;
+  group.toolsWithoutIds += row.toolsWithoutIds;
+  group.reversedSpans += row.reversedSpans;
+  group.outOfOrderToolLinks += row.outOfOrderToolLinks;
+  for (const name of Object.keys(row.coverage) as Array<keyof typeof row.coverage>) group.coverage[name] += row.coverage[name];
+  for (const [name, count] of Object.entries(row.counts)) group.counts[name] = (group.counts[name] ?? 0) + count;
+}
+
+export interface AuditWindow {
+  /** Maximum number of traces to audit, newest first. */
+  limit: number;
+  /** ISO timestamps. Defaults to the last 24 hours. */
+  from?: string;
+  to?: string;
+}
+
+/** Trace-centric read API of Langfuse v3 and self-hosted legacy/dual write modes. */
+export async function auditLangfuse(client: LangfuseClient, window: AuditWindow | number) {
+  const { limit, from, to } = typeof window === 'number' ? { limit: window } as AuditWindow : window;
+  const since = from ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const query = new URLSearchParams({ limit: String(limit), fromTimestamp: since });
+  if (to) query.set('toTimestamp', to);
   const page = await client.read<{ data: Array<{ id: string }> }>('/api/public/traces?' + query);
-  const groups: Record<string, { traces: number; tools: number; toolLinks: number; toolsWithoutIds: number;
-    reversedSpans: number; outOfOrderToolLinks: number; coverage: ReturnType<typeof auditStoredTrace>['coverage']; counts: Record<string, number> }> = {};
+  const groups: AgentGroups = {};
   for (let i = 0; i < page.data.length; i += 4) {
     const traces = await Promise.all(page.data.slice(i, i + 4).map(({ id }) =>
       client.read<StoredTrace>('/api/public/traces/' + encodeURIComponent(id))));
-    for (const trace of traces) {
-      const row = auditStoredTrace(trace);
-      const group = groups[row.agent];
-      if (!group) {
-        const { agent, ...summary } = row;
-        groups[agent] = { traces: 1, ...summary };
-        continue;
-      }
-      group.traces++;
-      group.tools += row.tools;
-      group.toolLinks += row.toolLinks;
-      group.toolsWithoutIds += row.toolsWithoutIds;
-      group.reversedSpans += row.reversedSpans;
-      group.outOfOrderToolLinks += row.outOfOrderToolLinks;
-      for (const name of Object.keys(row.coverage) as Array<keyof typeof row.coverage>) group.coverage[name] += row.coverage[name];
-      for (const [name, count] of Object.entries(row.counts)) group.counts[name] = (group.counts[name] ?? 0) + count;
-    }
+    for (const trace of traces) addTrace(groups, trace);
   }
-  return { since, traces: page.data.length, agents: groups };
+  return { api: 'legacy' as const, since, until: to, traces: page.data.length, agents: groups };
+}
+
+interface ObservationV2 extends Observation {
+  traceId: string;
+  parentObservationId?: string | null;
+  tags?: string[];
+}
+
+const V2_FIELDS = 'core,basic,io,usage,metadata,model,trace_context';
+const V2_PAGE = 1000;
+const V2_MAX_PAGES = 50;
+
+/** Read one page-chain of observations. `meta.cursor` may be present on an empty page. */
+export async function readObservations(client: LangfuseClient, filter: Record<string, string>, maxPages = V2_MAX_PAGES) {
+  const observations: ObservationV2[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    const query = new URLSearchParams({ ...filter, fields: V2_FIELDS, limit: String(V2_PAGE) });
+    if (cursor) query.set('cursor', cursor);
+    const page = await client.read<{ data?: ObservationV2[]; meta?: { cursor?: string | null } }>('/api/public/v2/observations?' + query);
+    observations.push(...(Array.isArray(page.data) ? page.data : []));
+    cursor = page.meta?.cursor || undefined;
+    pages++;
+  } while (cursor && pages < maxPages);
+  return { observations, truncated: Boolean(cursor) };
+}
+
+const truthy = (value: unknown) => value === true || value === 'true';
+
+/** Rebuild a trace from its observations: v4 has no stored trace row to read. */
+export function traceFromObservations(traceId: string, observations: ObservationV2[]): StoredTrace {
+  const root = observations.find((span) => !span.parentObservationId) ?? observations[0];
+  const attribute = (name: string) => root?.metadata?.[name] ?? root?.metadata?.attributes?.['langfuse.trace.metadata.' + name];
+  const agent = attribute('agent');
+  return {
+    id: traceId,
+    timestamp: root?.startTime ?? '',
+    tags: Array.isArray(root?.tags) ? root.tags : [],
+    metadata: { complete: truthy(attribute('complete')), agent: typeof agent === 'string' ? agent : undefined },
+    observations,
+  };
+}
+
+/** Observation-centric read API of Langfuse Cloud and self-hosted v4. */
+export async function auditLangfuseV2(client: LangfuseClient, window: AuditWindow) {
+  const since = window.from ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const filter: Record<string, string> = { fromStartTime: since };
+  if (window.to) filter.toStartTime = window.to;
+  const { observations, truncated } = await readObservations(client, filter);
+  const byTrace = new Map<string, ObservationV2[]>();
+  for (const observation of observations) {
+    if (typeof observation?.traceId !== 'string') continue;
+    const group = byTrace.get(observation.traceId);
+    if (group) group.push(observation); else byTrace.set(observation.traceId, [observation]);
+  }
+  const traces = [...byTrace].map(([id, group]) => traceFromObservations(id, group))
+    .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, window.limit);
+  const groups: AgentGroups = {};
+  for (const trace of traces) addTrace(groups, trace);
+  // A trace that starts before the window is read without its earlier spans.
+  return { api: 'v2' as const, since, until: window.to, observations: observations.length, truncated,
+    traces: traces.length, tracesInWindow: byTrace.size, agents: groups };
+}
+
+/** Read one trace back to check that a delivery actually reached storage. */
+export async function readTraceObservations(client: LangfuseClient, api: 'v2' | 'legacy', traceId: string) {
+  if (api === 'legacy') {
+    const trace = await client.read<StoredTrace>('/api/public/traces/' + encodeURIComponent(traceId));
+    return (trace.observations ?? []).map((span) => ({ id: span.id, type: span.type }));
+  }
+  const { observations } = await readObservations(client, { traceId }, 5);
+  return observations.map((span) => ({ id: span.id, type: span.type }));
 }

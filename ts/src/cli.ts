@@ -7,13 +7,15 @@
 //   node src/cli.ts doctor [claude|codex]
 //   node src/cli.ts delivery <agent> [--all] | delivery <agent> clear <traceId> [--destination ID]
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
-//   node src/cli.ts audit-langfuse [claude|codex] [--limit N]
+//   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL]
+//   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> [--session ID] [--dry-run]
 
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { loadConfig } from './core/config.ts';
-import { auditLangfuse, summarizeTurns } from './core/audit.ts';
+import { auditLangfuse, auditLangfuseV2, readTraceObservations, summarizeTurns } from './core/audit.ts';
+import { otlpSpanId } from './core/otlp.ts';
 import { parseOmpSession } from './adapters/omp.ts';
 import { readCopilotTurn } from './adapters/copilot.ts';
 import { runAntigravityHook } from './core/antigravity-hook.ts';
@@ -237,9 +239,89 @@ async function cmdAuditLangfuse(agent: string | undefined, args: string[]): Prom
   const rawLimit = flag(args, 'limit');
   const limit = rawLimit === undefined ? 20 : Number(rawLimit === true ? NaN : rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('--limit must be an integer from 1 to 100');
+  const window = { limit, from: timeFlag(args, 'from'), to: timeFlag(args, 'to') };
   const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
-    timeoutMs: cfg.timeoutMs, logger: createLogger(logPath(cfg), false) });
-  console.log(JSON.stringify(await auditLangfuse(client, limit), null, 2));
+    timeoutMs: Math.max(cfg.timeoutMs, 30000), logger: createLogger(logPath(cfg), false) });
+  const report = readApi(cfg, args) === 'v2' ? await auditLangfuseV2(client, window) : await auditLangfuse(client, window);
+  console.log(JSON.stringify(report, null, 2));
+}
+
+function timeFlag(args: string[], name: string): string | undefined {
+  const raw = flag(args, name);
+  if (raw === undefined) return undefined;
+  const time = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  if (!Number.isFinite(time)) throw new Error(`--${name} expects an ISO timestamp`);
+  return new Date(time).toISOString();
+}
+
+/**
+ * v2 reads observations (Langfuse Cloud, self-hosted v4). legacy reads stored
+ * traces (self-hosted v3, or v4 in legacy/dual write mode). The default follows
+ * the transport that wrote the data.
+ */
+function readApi(cfg: ReturnType<typeof loadConfig>, args: string[]): 'v2' | 'legacy' {
+  const raw = flag(args, 'api');
+  if (raw === undefined) return cfg.langfuseTransport === 'otlp' ? 'v2' : 'legacy';
+  if (raw !== 'v2' && raw !== 'legacy') throw new Error('--api must be v2 or legacy');
+  return raw;
+}
+
+/** Read a trace back from each backend. This, not an HTTP 2xx, shows it was stored. */
+async function cmdVerify(agent: string | undefined, traceId: string | undefined, args: string[]): Promise<void> {
+  if (!TRACE_AGENTS.includes(agent as TraceAgentName)) throw new Error('verify expects one of: ' + TRACE_AGENTS.join(', '));
+  if (!traceId || !/^[0-9a-f]{32}$/.test(traceId)) throw new Error('verify <agent> <traceId> expects a 32-hex trace ID');
+  const cfg = loadConfig(agent as TraceAgentName, { ...process.env });
+  const records = listRecords(deliveryDir(cfg)).filter((r) => r.traceId === traceId);
+  const report: Record<string, unknown> = { traceId, local: records.map((r) => ({ destination: r.destination, status: r.status,
+    accepted: Object.values(r.spans).filter((hash) => hash !== 'dropped').length, pending: r.pending?.length ?? 0 })) };
+  let ok = true;
+  if (cfg.publicKey && cfg.secretKey) {
+    const api = readApi(cfg, args);
+    const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
+      timeoutMs: Math.max(cfg.timeoutMs, 30000), logger: createLogger(logPath(cfg), false) });
+    try {
+      const stored = await readTraceObservations(client, api, traceId);
+      const ids = stored.map((span) => span.id);
+      const record = records.find((r) => r.destination.startsWith('langfuse-'));
+      const expected = record ? Object.entries(record.spans).filter(([, hash]) => hash !== 'dropped')
+        .map(([id]) => record.destination.startsWith('langfuse-otlp') ? otlpSpanId(id) : id) : [];
+      const types: Record<string, number> = {};
+      for (const span of stored) types[span.type] = (types[span.type] ?? 0) + 1;
+      // Legacy records also hold the trace and event IDs, which are not observations.
+      const missing = record?.destination.startsWith('langfuse-otlp') ? expected.filter((id) => !ids.includes(id)).length : undefined;
+      const duplicates = ids.length - new Set(ids).size;
+      report.langfuse = { api, stored: stored.length, types, missing, duplicates,
+        verdict: !stored.length ? 'NOT FOUND' : missing || duplicates ? 'INCOMPLETE OR DUPLICATED' : 'STORED' };
+      ok &&= stored.length > 0 && !missing && !duplicates;
+    } catch (e) {
+      report.langfuse = { api, verdict: 'READ FAILED', detail: (e as Error).message };
+      ok = false;
+    }
+  } else {
+    report.langfuse = { verdict: 'NOT CHECKED', detail: 'no Langfuse keys in this agent configuration' };
+  }
+  const tempo = flag(args, 'tempo');
+  if (typeof tempo === 'string') {
+    try {
+      const res = await fetch(new URL('/api/traces/' + traceId, tempo), { signal: AbortSignal.timeout(15000), redirect: 'error' });
+      if (res.status === 404) { report.tempo = { verdict: 'NOT FOUND' }; ok = false; }
+      else if (!res.ok) { report.tempo = { verdict: 'READ FAILED', detail: 'HTTP ' + res.status }; ok = false; }
+      else {
+        const body = await res.json() as { batches?: any[]; resourceSpans?: any[] };
+        const spans = (body.batches ?? body.resourceSpans ?? []).flatMap((batch) =>
+          (batch.scopeSpans ?? batch.instrumentationLibrarySpans ?? []).flatMap((scope: any) => scope.spans ?? []));
+        report.tempo = { stored: spans.length, verdict: spans.length ? 'STORED' : 'NOT FOUND' };
+        ok &&= spans.length > 0;
+      }
+    } catch {
+      report.tempo = { verdict: 'READ FAILED', detail: 'Tempo query endpoint unreachable' };
+      ok = false;
+    }
+  } else {
+    report.tempo = { verdict: 'NOT CHECKED', detail: 'pass --tempo <Tempo query URL>, for example http://127.0.0.1:13200' };
+  }
+  console.log(JSON.stringify(report, null, 2));
+  if (!ok) process.exitCode = 1;
 }
 
 async function main(): Promise<void> {
@@ -322,12 +404,14 @@ async function main(): Promise<void> {
     }
     case 'delivery':
       return cmdDelivery(a1, args);
+    case 'verify':
+      return cmdVerify(a1, a2, args);
     case 'audit-langfuse':
       return cmdAuditLangfuse(a1, args);
     case 'backfill':
       return cmdBackfill(agentsArg(a1)[0], a2, rest);
     default:
-      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 9).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 10).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   }
 }
 
