@@ -2,6 +2,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { basename, dirname, join } from 'node:path';
 import { parseClaudeTranscript } from '../adapters/claude.ts';
 import { parseCodexRollout } from '../adapters/codex.ts';
+import { parseOmpSession } from '../adapters/omp.ts';
 import { readJsonlFrom } from './jsonl.ts';
 import type { SubAgentRun, Turn } from './types.ts';
 
@@ -61,6 +62,48 @@ function readClaudeAgent(file: string, meta: Record<string, unknown>, parentTool
     events: turn.events, toolResults: turn.toolResults,
     metadata: { agentType: type, model: typeof meta.model === 'string' ? meta.model : undefined,
       spawnDepth: typeof meta.spawnDepth === 'number' ? meta.spawnDepth : undefined } };
+}
+
+/**
+ * Oh My Pi: the `task` tool runs each task in a session of its own, written to
+ * <session>/<TaskName>.jsonl beside the parent's <session>.jsonl. The task name
+ * in the tool call's arguments is the file name.
+ */
+export function attachOmpSubagents(agentHome: string, sessionId: string, turns: Turn[]): void {
+  if (!turns.length || !sessionId) return;
+  const root = join(agentHome, 'sessions');
+  let dir: string | undefined;
+  const list = (path: string) => { try { return readdirSync(path, { withFileTypes: true }); } catch { return []; } };
+  for (const group of list(root)) {
+    if (!group.isDirectory()) continue;
+    const hit = list(join(root, group.name)).find(entry => entry.isDirectory() && entry.name.endsWith('_' + sessionId));
+    if (hit) { dir = join(root, group.name, hit.name); break; }
+  }
+  if (!dir) return;
+  const files = list(dir).filter(entry => entry.isFile() && entry.name.endsWith('.jsonl') && entry.name !== 'changes.jsonl');
+  for (const file of files) {
+    const task = file.name.replace(/\.jsonl$/, '');
+    // The tool call that named this task owns it.
+    let owner: Turn | undefined;
+    let call: string | undefined;
+    for (const turn of turns) {
+      const step = turn.steps.find(candidate => candidate.kind === 'tool' && candidate.name === 'task'
+        && Array.isArray((candidate.input as { tasks?: Array<{ name?: unknown }> } | undefined)?.tasks)
+        && (candidate.input as { tasks: Array<{ name?: unknown }> }).tasks.some(item => item?.name === task));
+      if (step) { owner = turn; call = step.key; }
+    }
+    if (!owner) continue;
+    try {
+      const entries = readJsonlFrom(join(dir, file.name)).entries.map((entry, offset) => ({ value: entry.value, offset }));
+      for (const turn of parseOmpSession(entries, task)) {
+        (owner.children ??= []).push({ key: `${task}:${turn.key}`, name: task, startTime: turn.startTime, endTime: turn.endTime,
+          input: turn.input, output: turn.output, complete: turn.complete, parentToolKey: call, steps: turn.steps,
+          events: turn.events, toolResults: turn.toolResults, metadata: { agentType: task, taskSession: turn.sessionId } });
+      }
+    } catch {
+      /* an unreadable task session does not stop the others */
+    }
+  }
 }
 
 interface ThreadEntry {

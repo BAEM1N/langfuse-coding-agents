@@ -190,3 +190,45 @@ test('Codex spawned thread: its own turns are attached to the parent turn, and c
   await stop('codex', parent, session);
   assert.equal(requests.length, 2);
 });
+
+test('Oh My Pi task session: attached under the task call that named it', async () => {
+  const { attachOmpSubagents } = await import('../src/core/subagents.ts');
+  const { parseOmpSession } = await import('../src/adapters/omp.ts');
+  const { turnToEvents } = await import('../src/core/batch.ts');
+  const home = mkdtempSync(join(tmpdir(), 'lah-omp-task-'));
+  try {
+    const dir = join(home, 'sessions', '-tmp', '2026-11-20T10-00-00-000Z_parent-session');
+    mkdirSync(dir, { recursive: true });
+    const message = (id: string, parentId: string | null, body: object) => ({ type: 'message', id, parentId, message: body });
+    writeFileSync(join(dir, 'LiteUpgrade.jsonl'), [
+      { type: 'session', id: 'task-session', parentSession: 'parent-session' },
+      message('tu', null, { role: 'user', content: 'do the task', timestamp: 2000 }),
+      message('tg', 'tu', { role: 'assistant', timestamp: 2100, completedAt: 2900, content: [{ type: 'text', text: 'done' }],
+        usage: { input: 30, output: 4, totalTokens: 34 }, stopReason: 'stop' }),
+    ].map(row => JSON.stringify(row)).join('\n') + '\n');
+    writeFileSync(join(dir, 'changes.jsonl'), '{"type":"change"}\n');
+    const parent = [
+      { type: 'session', id: 'parent-session' },
+      message('u', null, { role: 'user', content: 'x', timestamp: 1000 }),
+      message('g', 'u', { role: 'assistant', timestamp: 1100, completedAt: 1900, usage: { input: 9, output: 1, totalTokens: 10 }, stopReason: 'toolUse',
+        content: [{ type: 'toolCall', id: 'call-task', name: 'task', arguments: { tasks: [{ name: 'LiteUpgrade', task: 't' }] } }] }),
+      message('r', 'g', { role: 'toolResult', toolCallId: 'call-task', toolName: 'task', timestamp: 3000 }),
+      message('e', 'r', { role: 'assistant', timestamp: 3100, completedAt: 3500, usage: { input: 12, output: 2, totalTokens: 14 }, stopReason: 'stop',
+        content: [{ type: 'text', text: 'ok' }] }),
+    ].map((value, offset) => ({ value, offset }));
+    const turns = parseOmpSession(parent, 'fallback');
+    attachOmpSubagents(home, turns[0].sessionId, turns);
+    assert.equal(turns[0].children?.length, 1);
+    assert.equal(turns[0].children![0].name, 'LiteUpgrade');
+    assert.equal(turns[0].children![0].parentToolKey, 'call-task');
+    const events = turnToEvents(turns[0], { agentLabel: 'Oh My Pi', agentTag: 'oh-my-pi', userId: 'u', hostname: 'h', maxChars: 2000, redact: true });
+    const counted = events.filter(event => event.type === 'generation-create');
+    assert.equal(counted.reduce((sum, event) => sum + (event.body.usageDetails as { total: number }).total, 0), 10 + 14 + 34, 'main and task tokens, once');
+    const run = events.find(event => event.body.name === 'Subagent: LiteUpgrade' && event.body.traceId === events[0].body.id);
+    const taskCall = events.find(event => event.type === 'tool-create' && event.body.name === 'task');
+    assert.equal(run?.body.parentObservationId, taskCall?.body.id);
+    assert.equal(events.filter(event => event.type === 'trace-create').length, 2, 'the turn and the task session on its own');
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+});
