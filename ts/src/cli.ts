@@ -9,7 +9,7 @@
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
 //   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL] [--reconcile]
 //   node src/cli.ts coverage <claude|codex> [--since ISO] [--until ISO] [--deep N]
-//   node src/cli.ts selftest [claude|codex|omp|copilot|opencode|antigravity|all] [--keep]   (sends a synthetic turn to the project, checks it, deletes it)
+//   node src/cli.ts selftest [claude|codex|omp|copilot|opencode|antigravity|all] [--keep] | selftest --cleanup   (sends a synthetic turn to the project, checks it, deletes it)
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> --from ISO --to ISO [--session ID] [--dry-run]
 
@@ -30,7 +30,7 @@ import { createLogger } from './core/log.ts';
 import { canExport, deliveryDir, exportEvents } from './core/export.ts';
 import { clearRecord, listRecords, reconcile } from './core/delivery.ts';
 import { coverage } from './core/coverage.ts';
-import { selfTest } from './core/selftest.ts';
+import { cleanSelfTest, selfTest } from './core/selftest.ts';
 import { planBackfill, runBackfill } from './core/backfill.ts';
 import { isLangfuseCloud, resolveDestinations } from './core/destinations.ts';
 import { githubAttributes, githubOptions, readGithubContext } from './core/github.ts';
@@ -294,6 +294,11 @@ async function cmdCoverage(agent: string | undefined, args: string[]): Promise<v
  */
 async function cmdSelfTest(agent: string | undefined, args: string[]): Promise<void> {
   const target = agent && !agent.startsWith('--') ? agent : 'claude';
+  if (flag(args, 'cleanup')) {
+    // Traces left by an interrupted self-test, or one whose deletes ran ahead of ingestion.
+    console.log(JSON.stringify(await cleanSelfTest(loadConfig('claude', { ...process.env })), null, 2));
+    return;
+  }
   const known = ['claude', 'codex', 'omp', 'copilot', 'opencode', 'antigravity'] as const;
   const formats = target === 'all' ? known : known.filter((name) => name === target);
   if (!formats.length) throw new Error('selftest expects claude, codex, omp, copilot, opencode, antigravity or all');

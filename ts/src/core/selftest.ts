@@ -368,6 +368,31 @@ export interface SelfTestOptions {
   api?: 'v2' | 'legacy';
   /** How long to wait for the project to show what was sent. */
   waitMs?: number;
+  /** After deleting: how many times, and how far apart, to look for a trace that surfaced late. */
+  settleChecks?: number;
+  settleMs?: number;
+}
+
+/**
+ * Remove every trace a self-test left behind (environment `hook-selftest`),
+ * for example after one that was interrupted. Uses the stored-trace list where
+ * the server offers it, else the observations API.
+ */
+export async function cleanSelfTest(cfg: Config): Promise<{ found: number; deleted: number }> {
+  if (!cfg.publicKey || !cfg.secretKey) throw new Error('missing Langfuse keys');
+  const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
+    timeoutMs: Math.max(cfg.timeoutMs, 30000), logger: nullLogger });
+  const { value: ids } = await withReadApi(undefined, async (api) => {
+    if (api === 'v2') {
+      const { observations } = await readObservations(client, { environment: ENVIRONMENT }, 5, 'core');
+      return [...new Set((observations as Array<{ traceId?: string }>).map(observation => observation.traceId).filter((id): id is string => Boolean(id)))];
+    }
+    const list = await client.read<{ data?: Array<{ id: string }> }>(`/api/public/traces?environment=${ENVIRONMENT}&limit=100`);
+    return (list.data ?? []).map(trace => trace.id);
+  });
+  let deleted = 0;
+  for (const id of ids) if (await client.deleteTrace(id)) deleted++;
+  return { found: ids.length, deleted };
 }
 
 export async function selfTest(cfg: Config, options: SelfTestOptions) {
@@ -464,6 +489,14 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
     if (!options.keep) {
       const results = await Promise.all([client.deleteTrace(turnId), client.deleteTrace(runId)]);
       deleted = results.every(Boolean);
+      // A server can show a trace some seconds after accepting it. One deleted
+      // too early would reappear and stay, so look again and delete once more.
+      for (let pass = 0; pass < (options.settleChecks ?? 3); pass++) {
+        await wait(options.settleMs ?? 4000);
+        const present = await withReadApi(api, async chosen => [await readBack(client, chosen, turnId), await readBack(client, chosen, runId)])
+          .then(read => read.value.some(Boolean), () => false);
+        if (present) deleted = (await Promise.all([client.deleteTrace(turnId), client.deleteTrace(runId)])).every(Boolean);
+      }
     }
   } finally {
     for (const [key, value] of previous) {

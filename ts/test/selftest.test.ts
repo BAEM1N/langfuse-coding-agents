@@ -46,6 +46,7 @@ async function fakeLangfuse(t: TestContext, mode: 'v2' | 'legacy', corrupt?: (ob
         if (mode !== 'v2') return json(404, { message: 'not in a v4 write mode' });
         return json(200, { data: traces.get(url.searchParams.get('traceId') ?? '')?.observations ?? [], meta: {} });
       }
+      if (url.pathname === '/api/public/traces') return json(200, { data: [...traces.keys()].map(id => ({ id })), meta: { totalPages: 1 } });
       const match = /^\/api\/public\/traces\/([0-9a-f]{32})$/.exec(url.pathname);
       if (match && req.method === 'DELETE') { deleted.push(match[1]); traces.delete(match[1]); return json(200, { message: 'deleted' }); }
       if (match && mode === 'legacy') return traces.has(match[1]) ? json(200, traces.get(match[1])) : json(404, {});
@@ -63,7 +64,7 @@ for (const [mode, format] of [['v2', 'claude'], ['legacy', 'claude'], ['legacy',
   test(`selftest (${format} format) passes against a server that offers the ${mode} read API, and cleans up`, async (t) => {
     const before = { home: process.env.CLAUDE_CONFIG_DIR, copilot: process.env.COPILOT_HOME, transport: process.env.LANGFUSE_HOOK_TRANSPORT };
     const { config, traces, deleted } = await fakeLangfuse(t, mode);
-    const report = await selfTest(config, { format, keep: false, waitMs: 5000 });
+    const report = await selfTest(config, { format, keep: false, waitMs: 5000, settleChecks: 1, settleMs: 50 });
     assert.deepEqual(report.checks.filter(item => !item.ok), [], 'every check passes');
     assert.equal(report.ok, true);
     assert.equal(report.readApi, mode);
@@ -85,4 +86,26 @@ test('selftest fails when the server stores something else, and --keep leaves th
   assert.ok(report.checks.some(item => !item.ok && /turn tokens/.test(item.check)), 'the token check reports the difference');
   assert.equal(deleted.length, 0);
   assert.equal(traces.size, 2, 'kept for inspection');
+});
+
+test('selftest deletes a trace that surfaces after its first delete, and --cleanup removes leftovers', async (t) => {
+  const { cleanSelfTest } = await import('../src/core/selftest.ts');
+  const { config, traces, deleted } = await fakeLangfuse(t, 'legacy');
+  // Stand in for late ingestion: the first delete of each trace is answered but the trace comes back.
+  const kept = new Map<string, any>();
+  const original = traces.delete.bind(traces);
+  const once = new Set<string>();
+  traces.delete = (id: string) => {
+    if (!once.has(id)) { once.add(id); kept.set(id, traces.get(id)); original(id); setTimeout(() => traces.set(id, kept.get(id)), 10); return true; }
+    return original(id);
+  };
+  const report = await selfTest(config, { format: 'claude', keep: false, waitMs: 5000, settleChecks: 2, settleMs: 80 });
+  assert.equal(report.ok, true);
+  assert.equal(traces.size, 0, 'the trace that came back is deleted on the second look');
+  assert.ok(deleted.length >= 4);
+
+  traces.delete = original;
+  traces.set('a'.repeat(32), { id: 'a'.repeat(32), observations: [] });
+  const cleaned = await cleanSelfTest(config);
+  assert.deepEqual(cleaned, { found: 1, deleted: 1 });
 });
