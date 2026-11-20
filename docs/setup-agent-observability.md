@@ -323,6 +323,12 @@ sub-agent trace carries no usage of its own. Then it deletes the two traces.
 Nothing from a real session is sent, and the agent's read positions and
 delivery records are not touched. The exit code is 1 if any check fails.
 
+A server can show a trace some seconds after accepting it. The self-test waits
+for it, retries a read that times out, and after deleting looks again so a trace
+that surfaced late is not left behind. If a run is interrupted,
+`node ts/src/cli.ts selftest --cleanup` deletes everything in the
+`hook-selftest` environment.
+
 ## Check a new machine or operating system
 
 The shared runtime has no dependencies and runs TypeScript directly, so the
