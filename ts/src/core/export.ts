@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Config } from './config.ts';
-import { acquire, contentHash, MAX_ATTEMPTS, prune, readRecord, writeRecord, type DeliveryRecord } from './delivery.ts';
+import { acquire, contentHash, MAX_ATTEMPTS, prune, readRecord, VERIFIED, writeRecord, type DeliveryRecord } from './delivery.ts';
 import { resolveDestinations, type Destination } from './destinations.ts';
 import { LangfuseClient, type IngestionEvent, type IngestResult } from './langfuse.ts';
 import type { Logger } from './log.ts';
@@ -165,7 +165,7 @@ async function deliverOtlp(config: Config, destination: Destination, traceId: st
   const record = baseRecord(previous, traceId, destination.id, events);
   const fresh = [...hashes.keys()].filter(id => !(id in record.spans));
   // A span that changed after it was accepted cannot be updated in place.
-  const late = [...hashes].filter(([id, hash]) => id in record.spans && record.spans[id] !== hash && record.spans[id] !== 'dropped')
+  const late = [...hashes].filter(([id, hash]) => id in record.spans && record.spans[id] !== hash && record.spans[id] !== 'dropped' && record.spans[id] !== VERIFIED)
     .map(([id]) => id).filter(id => !record.lateChanges?.includes(id));
   if (late.length) {
     record.lateChanges = [...(record.lateChanges ?? []), ...late];

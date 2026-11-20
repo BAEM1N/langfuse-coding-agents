@@ -88,7 +88,8 @@ Optional:
 ```bash
 node src/cli.ts doctor                    # config, destinations, auth check, recent delivery results, hooks, log
 node src/cli.ts delivery claude           # turns not confirmed; `delivery claude clear <traceId>` allows a resend
-node src/cli.ts verify claude <traceId> [--tempo http://127.0.0.1:13200]   # read the trace back
+node src/cli.ts verify claude <traceId> [--tempo http://127.0.0.1:13200] [--reconcile]   # read the trace back; settle an unconfirmed turn
+node src/cli.ts coverage claude [--since <ISO>] [--deep N]   # local transcripts vs. stored: missing turns, short turns, uncosted model calls
 node src/cli.ts backfill claude <file.jsonl> --from <ISO> --to <ISO> [--dry-run]
 node src/cli.ts backfill codex  <rollout.jsonl> --from <ISO> --to <ISO> [--session ID] [--dry-run]
 node src/cli.ts uninstall all

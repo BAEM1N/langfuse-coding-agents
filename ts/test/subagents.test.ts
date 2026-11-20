@@ -142,7 +142,12 @@ test('Codex spawned thread: its own turns are attached to the parent turn, and c
   mkdirSync(dir, { recursive: true });
   const parent = join(dir, `rollout-2026-11-08T14-08-13-${session}.jsonl`);
   const rows = fixture('codex-rollout.jsonl');
-  writeFileSync(parent, rows.join('\n') + '\n');
+  // The parent records which tool call spawned the thread.
+  const callRow = rows.findIndex(line => line.includes('"custom_tool_call"'));
+  const call = JSON.parse(rows[callRow]);
+  const activity = { timestamp: call.timestamp, ordinal: call.ordinal, type: 'event_msg', payload: { type: 'item_completed', turn_id: parentTurn,
+    item: { type: 'SubAgentActivity', id: call.payload.call_id, agent_thread_id: 'thread-child-1', kind: 'spawn' } } };
+  writeFileSync(parent, [...rows.slice(0, callRow + 1), JSON.stringify(activity), ...rows.slice(callRow + 1)].join('\n') + '\n');
 
   // A forked thread: the parent's rows first (ordinals below the history start), then its own turn.
   const history = rows.slice(1).map(line => JSON.parse(line));
@@ -167,7 +172,8 @@ test('Codex spawned thread: its own turns are attached to the parent turn, and c
   const root = turn.find(span => !span.parentSpanId);
   const agent = turn.find(span => span.name === 'Subagent: scout');
   assert.ok(agent, 'the thread is attached to the turn named in its turn_attribution');
-  assert.equal(agent.parentSpanId, root.spanId);
+  const spawnTool = turn.find(span => type(span) === 'tool' && span.parentSpanId === root.spanId);
+  assert.equal(agent.parentSpanId, spawnTool.spanId, 'under the tool call that spawned the thread');
   const mainCalls = turn.filter(span => type(span) === 'generation' && span.parentSpanId === root.spanId);
   const threadCalls = turn.filter(span => type(span) === 'generation' && span.parentSpanId === agent.spanId);
   assert.equal(mainCalls.length, 2);

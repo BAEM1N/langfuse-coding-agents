@@ -95,10 +95,11 @@ node ts/src/cli.ts doctor claude                     # 설정, 목적지, 최근
 node ts/src/cli.ts delivery claude                   # 실패·부분 전송·미확인 턴
 node ts/src/cli.ts verify claude <traceId>           # Langfuse에서 트레이스를 다시 조회
 node ts/src/cli.ts verify claude <traceId> --tempo http://127.0.0.1:13200
+node ts/src/cli.ts coverage claude --since 2026-11-20T00:00:00Z   # 로컬 트랜스크립트와 저장된 것 대조
 node ts/src/cli.ts audit-langfuse claude --limit 10  # 조회 API는 자동 감지, --api v2|legacy로 강제
 ```
 
-`doctor`의 인증 성공이나 훅 로그의 접수 기록만으로는 트레이스가 저장됐다고 볼 수 없습니다. `verify`가 백엔드에서 트레이스를 읽어 보낸 내용과 비교합니다. `unconfirmed`로 표시된 턴(타임아웃, 응답 유실, 부분 거부)은 자동으로 다시 보내지 않습니다. `verify`로 확인한 뒤 실제로 없을 때만 `delivery claude clear <traceId>`를 실행하세요.
+`doctor`의 인증 성공이나 훅 로그의 접수 기록만으로는 트레이스가 저장됐다고 볼 수 없습니다. `verify`가 백엔드에서 트레이스를 읽어 보낸 내용과 비교합니다. `unconfirmed`로 표시된 턴(타임아웃, 응답 유실, 부분 거부)은 자동으로 다시 보내지 않습니다. `verify`로 확인한 뒤 `verify claude <traceId> --reconcile`을 실행하면 저장된 스팬은 확정하고 없는 스팬만 다시 보냅니다. `coverage`는 기간 내 로컬 턴 전체를 프로젝트와 대조해 누락된 턴, 덜 저장된 턴, 비용이 없는 모델 호출을 알려줍니다.
 
 Codex 설정에 프로젝트 키가 있다면 위 명령에서 `claude`를 `codex`로 바꾸세요. [Deep Agents SDK](tools/deepagents/)와 [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector)는 각각 콜백과 네이티브 OTLP를 사용합니다.
 

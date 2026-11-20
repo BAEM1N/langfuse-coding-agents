@@ -202,12 +202,13 @@ const V2_PAGE = 1000;
 const V2_MAX_PAGES = 50;
 
 /** Read one page-chain of observations. `meta.cursor` may be present on an empty page. */
-export async function readObservations(client: LangfuseClient, filter: Record<string, string>, maxPages = V2_MAX_PAGES) {
+export async function readObservations(client: LangfuseClient, filter: Record<string, string>, maxPages = V2_MAX_PAGES,
+  fields = V2_FIELDS) {
   const observations: ObservationV2[] = [];
   let cursor: string | undefined;
   let pages = 0;
   do {
-    const query = new URLSearchParams({ ...filter, fields: V2_FIELDS, limit: String(V2_PAGE) });
+    const query = new URLSearchParams({ ...filter, fields, limit: String(V2_PAGE) });
     if (cursor) query.set('cursor', cursor);
     const page = await client.read<{ data?: ObservationV2[]; meta?: { cursor?: string | null } }>('/api/public/v2/observations?' + query);
     observations.push(...(Array.isArray(page.data) ? page.data : []));

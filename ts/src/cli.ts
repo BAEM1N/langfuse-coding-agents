@@ -7,7 +7,8 @@
 //   node src/cli.ts doctor [claude|codex]
 //   node src/cli.ts delivery <agent> [--all] | delivery <agent> clear <traceId> [--destination ID]
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
-//   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL]
+//   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL] [--reconcile]
+//   node src/cli.ts coverage <claude|codex> [--since ISO] [--until ISO] [--deep N]
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> --from ISO --to ISO [--session ID] [--dry-run]
 
@@ -26,7 +27,8 @@ import { turnToEvents } from './core/batch.ts';
 import { LangfuseClient } from './core/langfuse.ts';
 import { createLogger } from './core/log.ts';
 import { canExport, deliveryDir, exportEvents } from './core/export.ts';
-import { clearRecord, listRecords } from './core/delivery.ts';
+import { clearRecord, listRecords, reconcile } from './core/delivery.ts';
+import { coverage } from './core/coverage.ts';
 import { planBackfill, runBackfill } from './core/backfill.ts';
 import { isLangfuseCloud, resolveDestinations } from './core/destinations.ts';
 import { githubAttributes, githubOptions, readGithubContext } from './core/github.ts';
@@ -266,6 +268,22 @@ async function cmdAuditLangfuse(agent: string | undefined, args: string[]): Prom
   console.log(JSON.stringify(report, null, 2));
 }
 
+/** Local transcripts against what the project holds: missing turns, short turns, uncosted model calls. */
+async function cmdCoverage(agent: string | undefined, args: string[]): Promise<void> {
+  if (agent !== 'claude' && agent !== 'codex') throw new Error('coverage expects claude or codex');
+  const cfg = loadConfig(agent, { ...process.env });
+  if (!cfg.publicKey || !cfg.secretKey) throw new Error('missing Langfuse keys');
+  const rawDeep = flag(args, 'deep');
+  const deep = rawDeep === undefined ? 40 : Number(rawDeep === true ? NaN : rawDeep);
+  if (!Number.isInteger(deep) || deep < 0 || deep > 500) throw new Error('--deep must be an integer from 0 to 500');
+  const client = new LangfuseClient({ baseUrl: cfg.baseUrl, publicKey: cfg.publicKey, secretKey: cfg.secretKey,
+    timeoutMs: Math.max(cfg.timeoutMs, 60000), logger: createLogger(logPath(cfg), false) });
+  const report = await coverage(agent, cfg, client, { since: timeFlag(args, 'since') ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    until: timeFlag(args, 'until'), api: readApi(args), deep });
+  console.log(JSON.stringify(report, null, 2));
+  if (report.stored.finishedTurnsMissing > 0) process.exitCode = 1;
+}
+
 function timeFlag(args: string[], name: string): string | undefined {
   const raw = flag(args, name);
   if (raw === undefined) return undefined;
@@ -317,6 +335,16 @@ async function cmdVerify(agent: string | undefined, traceId: string | undefined,
       report.langfuse = { api, stored: stored.length, types, missing, duplicates,
         verdict: !stored.length ? 'NOT FOUND' : missing || duplicates ? 'INCOMPLETE OR DUPLICATED' : 'STORED' };
       ok &&= stored.length > 0 && !missing && !duplicates;
+      if (record?.status === 'unconfirmed' && record.destination.startsWith('langfuse-otlp')) {
+        // A read can run ahead of ingestion, so settling the record is asked for, never assumed.
+        if (flag(args, 'reconcile')) {
+          report.reconciled = reconcile(deliveryDir(cfg), record, new Set(ids), otlpSpanId);
+        } else {
+          const present = (record.pending ?? []).filter((id) => ids.includes(otlpSpanId(id))).length;
+          report.unconfirmed = { pending: record.pending?.length ?? 0, foundInBackend: present,
+            next: 'Re-run with --reconcile to accept the spans found and release the rest for sending. Allow a few minutes after the send first: a read can run ahead of ingestion.' };
+        }
+      }
     } catch (e) {
       report.langfuse = { api, verdict: 'READ FAILED', detail: (e as Error).message };
       ok = false;
@@ -430,12 +458,14 @@ async function main(): Promise<void> {
       return cmdDelivery(a1, args);
     case 'verify':
       return cmdVerify(a1, a2, args);
+    case 'coverage':
+      return cmdCoverage(a1, args);
     case 'audit-langfuse':
       return cmdAuditLangfuse(a1, args);
     case 'backfill':
       return cmdBackfill(agentsArg(a1)[0], a2, rest);
     default:
-      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 10).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+      console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 11).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
   }
 }
 

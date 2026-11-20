@@ -207,3 +207,37 @@ test('OMP extension exports a completed turn without prompt or tool bodies', asy
   assert.deepEqual(batch[2].body.usageDetails, { input: 17, output: 2 });
   assert.ok(batch.every((event) => !('input' in event.body) && !('output' in event.body)));
 });
+
+test('OMP extension sends a turn still open when the session shuts down', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'langfuse-omp-close-'));
+  const env = { PI_CODING_AGENT_DIR: home, TRACE_TO_LANGFUSE: 'true', LANGFUSE_BASE_URL: 'https://example.test',
+    CC_LANGFUSE_BASE_URL: 'https://example.test', CC_LANGFUSE_PUBLIC_KEY: 'test', CC_LANGFUSE_SECRET_KEY: 'test',
+    CODING_AGENT_OTLP_ENABLED: 'false', LANGFUSE_HOOK_CAPTURE_CONTENT: 'false', CODING_AGENT_GITHUB_METADATA: 'false' };
+  const before = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(home, { force: true, recursive: true });
+  });
+  Object.assign(process.env, env);
+  let batch: Array<{ type: string; body: Record<string, any> }> = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    batch = JSON.parse(String(init.body)).batch;
+    return new Response('{"errors":[]}', { status: 207 });
+  });
+  const handlers: Record<string, any> = {};
+  ompExtension({ on: (name, fn) => { handlers[name] = fn; } });
+  // The model asked for a tool and the session was closed before anything came back.
+  await handlers.session_shutdown({}, { sessionManager: { getSessionId: () => 'closing', getBranch: () => [
+    { type: 'message', id: 'u', parentId: null, message: { role: 'user', content: 'x', timestamp: 1000 } },
+    { type: 'message', id: 'g', parentId: 'u', message: { role: 'assistant', timestamp: 1500, completedAt: 2000,
+      content: [{ type: 'toolCall', id: 'a' }], usage: { input: 9, output: 1 }, stopReason: 'toolUse' } },
+  ] } });
+  const trace = batch.find((event) => event.type === 'trace-create');
+  assert.ok(trace, 'the open turn is sent rather than dropped');
+  assert.equal(trace.body.metadata.endedWithoutStop, true);
+  assert.equal(trace.body.metadata.complete, true);
+  assert.ok(!String(trace.body.name).includes('in progress'));
+  assert.deepEqual(batch.find((event) => event.type === 'generation-create')?.body.usageDetails, { input: 9, output: 1 });
+});

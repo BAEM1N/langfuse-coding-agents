@@ -98,10 +98,11 @@ node ts/src/cli.ts doctor claude                     # settings, destinations, l
 node ts/src/cli.ts delivery claude                   # turns that are failed, partial or unconfirmed
 node ts/src/cli.ts verify claude <traceId>           # read the trace back from Langfuse
 node ts/src/cli.ts verify claude <traceId> --tempo http://127.0.0.1:13200
+node ts/src/cli.ts coverage claude --since 2026-11-20T00:00:00Z   # local transcripts vs. what is stored
 node ts/src/cli.ts audit-langfuse claude --limit 10  # read API is detected; force with --api v2|legacy
 ```
 
-`doctor` reporting valid keys, or a hook logging that a request was accepted, does not show that a trace is stored. `verify` does: it reads the trace from the backend and compares it with what was sent. A turn listed as `unconfirmed` (timeout, lost response, or a partial rejection) is not sent again automatically; check it with `verify`, then run `delivery claude clear <traceId>` only if it is missing.
+`doctor` reporting valid keys, or a hook logging that a request was accepted, does not show that a trace is stored. `verify` does: it reads the trace from the backend and compares it with what was sent. A turn listed as `unconfirmed` (timeout, lost response, or a partial rejection) is not sent again automatically; check it with `verify`, then `verify claude <traceId> --reconcile` to accept what is stored and resend only what is missing. `coverage` compares every local turn in a period with the project and lists turns that are missing, stored short, or have model calls without a cost.
 
 Use `codex` in those diagnostic commands if its configuration holds the project keys. See the [platform setup guide](docs/setup-agent-observability.md) for [Deep Agents SDK](tools/deepagents/) and [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) setup.
 

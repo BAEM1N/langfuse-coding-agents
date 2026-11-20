@@ -242,7 +242,7 @@ Check these before reading totals as complete.
 |---|---|---|
 | Sub-agents that finish after the turn | A background agent still running at Stop is sent when the next hook for that session runs | Run another turn, or backfill the transcript |
 | Sessions where hooks do not run | Headless or benchmark runs with another config directory, or hooks disabled, leave no trace | `doctor` shows which hooks are registered; compare session counts |
-| OMP turns that never finish | The extension sends on `agent_end`; an aborted turn is sent only if it completed | — |
+| OMP turns that never finish | A turn still open when the session shuts down is sent as it stands, marked `endedWithoutStop`; a process that is killed sends nothing | — |
 | Cost | Langfuse prices a model call only if the project has a model definition matching the model name | Add model definitions in Langfuse for the models you use |
 | Timing | Model-call start is the request row when the transcript has one, else the previous conversation row; tool time is call to result | — |
 

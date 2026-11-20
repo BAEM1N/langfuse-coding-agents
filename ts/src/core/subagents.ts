@@ -91,12 +91,22 @@ function readHead(path: string): any[] {
   }
 }
 
+/** True for the rollout of a thread another Codex session spawned. */
+export function isCodexThread(path: string): boolean {
+  try {
+    return readHead(path).some(row => row?.type === 'session_meta'
+      && (row.payload?.thread_source === 'subagent' || (row.payload?.source && typeof row.payload.source === 'object')));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Codex: a spawned thread's rollout carries the parent's session_id, and each
  * of its turns names the parent turn in turn_attribution. A forked thread
  * starts with a copy of the parent's history, which is skipped.
  */
-export function attachCodexSubagents(rolloutPath: string, sessionId: string, turns: Turn[]): void {
+export function attachCodexSubagents(rolloutPath: string, sessionId: string, turns: Turn[], persistIndex = true): void {
   const layout = /^(.*[\\/]sessions)[\\/](\d{4})[\\/](\d{2})[\\/](\d{2})[\\/][^\\/]+$/.exec(rolloutPath);
   if (!layout || !turns.length) return;
   const [, root, year, month, day] = layout;
@@ -168,9 +178,9 @@ export function attachCodexSubagents(rolloutPath: string, sessionId: string, tur
       for (const turn of parseCodexRollout(entries, { sessionId, turnsBefore: 0, context: {} }).turns) {
         const owner = wanted.get(parentOf.get(turn.key) ?? '');
         if (!owner) continue;
-        // The spawning tool call returns the thread ID.
+        // The first tool call of the turn that names this thread is the one that spawned it.
         const spawn = owner.steps.find(step => step.kind === 'tool' && entry.thread
-          && JSON.stringify(step.output ?? '').includes(entry.thread));
+          && ((step.metadata as { subagentThreadIds?: string[] } | undefined)?.subagentThreadIds ?? []).includes(entry.thread));
         (owner.children ??= []).push({ key: `${entry.thread}:${turn.key}`, name: entry.nickname || 'thread', startTime: turn.startTime,
           endTime: turn.endTime, input: turn.input, output: turn.output, complete: turn.complete, parentToolKey: spawn?.key,
           steps: turn.steps, events: turn.events, toolResults: turn.toolResults,
@@ -180,7 +190,7 @@ export function attachCodexSubagents(rolloutPath: string, sessionId: string, tur
       /* one unreadable thread does not stop the others */
     }
   }
-  if (changed) {
+  if (changed && persistIndex) {
     try {
       mkdirSync(dirname(indexPath), { recursive: true });
       const tmp = `${indexPath}.${process.pid}.tmp`;

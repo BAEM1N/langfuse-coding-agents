@@ -25,12 +25,15 @@ export default function (omp: OmpExtension): void {
   const sent = new Set<string>();
   log.debug('OMP extension initialized');
 
-  const sendLatest = async (ctx: OmpContext, completeOnly = false) => {
+  const sendLatest = async (ctx: OmpContext, closing = false) => {
     try {
       const sessionId = ctx.sessionManager.getSessionId();
       const entries = ctx.sessionManager.getBranch().map((value, offset) => ({ value, offset }));
-      const turn = parseOmpSession(entries, sessionId).at(-1);
-      if (!turn || (completeOnly && !turn.complete)) return;
+      let turn = parseOmpSession(entries, sessionId).at(-1);
+      if (!turn) return;
+      // The session is closing: a turn still open will get no agent_end, so it
+      // is sent as it stands. Otherwise an aborted turn was never sent at all.
+      if (closing && !turn.complete) turn = { ...turn, complete: true, metadata: { ...turn.metadata, endedWithoutStop: true } };
       const key = `${sessionId}/${turn.key}/${turn.complete}`;
       if (sent.has(key)) return;
       const existing = pending.get(key);

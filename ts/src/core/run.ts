@@ -50,7 +50,8 @@ export function parseTranscript(
   path: string,
   sessionId: string,
   st: Pick<TranscriptState, 'offset' | 'turnsBefore' | 'context'>,
-  subagents = true,
+  /** `read-only` attaches sub-agents without writing the thread lookup cache. */
+  subagents: boolean | 'read-only' = true,
 ): ParsedTranscript & { from: number } {
   const read = readJsonlFrom(path, st.offset);
   const turnsBefore = read.from === st.offset ? st.turnsBefore : 0;
@@ -64,7 +65,7 @@ export function parseTranscript(
     turnsBefore,
     context: read.from === st.offset ? ((st.context ?? {}) as CodexContext) : {},
   });
-  if (subagents) attach(() => attachCodexSubagents(path, sessionId, r.turns));
+  if (subagents) attach(() => attachCodexSubagents(path, sessionId, r.turns, subagents !== 'read-only'));
   return { turns: r.turns, context: r.context as Record<string, unknown>, from: read.from };
 }
 

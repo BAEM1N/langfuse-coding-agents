@@ -62,6 +62,8 @@ interface TurnAcc {
   pending?: GenAcc;
   tools: Map<string, ToolAcc>;
   commands: Array<{ callId?: string; time: string; data: unknown }>;
+  /** Tool call ID -> thread IDs it spawned or addressed. */
+  spawns: Map<string, Set<string>>;
   toolResults: NonNullable<Turn['toolResults']>;
   events: TurnEvent[];
   boundary: string; // time the next model call's input became ready
@@ -137,6 +139,7 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
         gens: [],
         tools: new Map(),
         commands: [],
+        spawns: new Map(),
         toolResults: [],
         events: [],
         boundary: ts,
@@ -218,6 +221,11 @@ export function parseCodexRollout(entries: JsonlEntry[], opts: CodexParseOptions
             t.boundary = ts;
           } else if (it.type === 'AgentMessage' && it.phase === 'final_answer') {
             t.finalMessage = contentText(it.content);
+          } else if (it.type === 'SubAgentActivity' && typeof it.agent_thread_id === 'string' && typeof it.id === 'string') {
+            // The tool call that spawned or addressed a thread: lets the thread's work hang under it.
+            const threads = t.spawns.get(it.id) ?? new Set<string>();
+            threads.add(it.agent_thread_id);
+            t.spawns.set(it.id, threads);
           } else if (it.type === 'CommandExecution') {
             t.commands.push({
               callId: it.call_id ?? it.id,
@@ -337,7 +345,9 @@ function finalize(t: TurnAcc, ctx: CodexContext, sessionId: string): Turn {
     input: x.input,
     output: x.output,
     isError: x.isError,
-    metadata: x.commands.length ? { commands: x.commands } : undefined,
+    metadata: x.commands.length || t.spawns.has(x.key)
+      ? { commands: x.commands.length ? x.commands : undefined, subagentThreadIds: t.spawns.has(x.key) ? [...t.spawns.get(x.key)!] : undefined }
+      : undefined,
   }));
   const steps: Array<GenerationStep | ToolStep> = [...t.gens, ...tools].sort((a, b) =>
     a.startTime < b.startTime ? -1 : a.startTime > b.startTime ? 1 : 0,

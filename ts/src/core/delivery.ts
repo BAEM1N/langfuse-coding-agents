@@ -40,6 +40,29 @@ export interface DeliveryRecord {
 }
 
 export const MAX_ATTEMPTS = 5;
+/** Stored in `spans` for an ID a read of the backend found, when its content hash was not kept. */
+export const VERIFIED = 'verified';
+
+/**
+ * Settle an unconfirmed record against what the backend actually holds.
+ * Spans found there are accepted. Spans not found were never stored, so they
+ * are released for the next run to send: that is safe, because it is now known
+ * they are absent. Returns what changed, or undefined if nothing was pending.
+ */
+export function reconcile(dir: string, record: DeliveryRecord, stored: ReadonlySet<string>,
+  storedId: (id: string) => string): { found: number; released: number; status: DeliveryStatus } | undefined {
+  if (record.status !== 'unconfirmed' || !record.pending?.length) return undefined;
+  const found = record.pending.filter(id => stored.has(storedId(id)));
+  for (const id of found) record.spans[id] = VERIFIED;
+  const released = record.pending.length - found.length;
+  record.status = released ? (Object.keys(record.spans).length ? 'partial' : 'failed') : 'confirmed';
+  record.pending = undefined;
+  record.attempts = 0;
+  record.lastError = released ? `${released} span(s) were not stored; they will be sent again` : undefined;
+  record.updatedAt = new Date().toISOString();
+  writeRecord(dir, record);
+  return { found: found.length, released, status: record.status };
+}
 const LOCK_STALE_MS = 2 * 60 * 1000;
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;

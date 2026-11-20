@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/core/config.ts';
-import { listRecords } from '../src/core/delivery.ts';
+import { listRecords, reconcile } from '../src/core/delivery.ts';
+import { otlpSpanId } from '../src/core/otlp.ts';
 import { resolveDestinations } from '../src/core/destinations.ts';
 import { deliveryDir } from '../src/core/export.ts';
 import { logPath, runHook } from '../src/core/run.ts';
@@ -541,4 +542,28 @@ test('a turn left without a Stop event is closed and sent once its transcript ha
   await new Promise(resolve => setTimeout(resolve, 300));
   await stop('claude', box.transcript, 'sess-2');
   assert.equal(lf.requests.length, 2, 'closed once: nothing is sent again');
+});
+
+test('an unconfirmed turn is settled against what the backend holds: found spans accepted, the rest sent once', async (t) => {
+  let healthy = false;
+  const lf = await receiver(t, () => healthy ? {} : { body: JSON.stringify({ partialSuccess: { rejectedSpans: 1 } }) });
+  const box = sandbox(t, langfuse(lf.url));
+  writeFileSync(box.transcript, fixture('claude-transcript.jsonl').slice(0, 8).join('\n') + '\n');
+  await stop('claude', box.transcript);
+  const dir = deliveryDir(loadConfig('claude'));
+  const [record] = listRecords(dir);
+  assert.equal(record.status, 'unconfirmed');
+  // A read of the backend finds three of the four spans.
+  const present = new Set(record.pending!.slice(0, 3).map(otlpSpanId));
+  const absent = otlpSpanId(record.pending![3]);
+  assert.deepEqual(reconcile(dir, record, present, otlpSpanId), { found: 3, released: 1, status: 'partial' });
+
+  healthy = true;
+  const next = await stop('claude', box.transcript);
+  assert.deepEqual(statuses(next, 'langfuse-otlp'), ['delivered']);
+  assert.deepEqual(spansOf(lf.requests[1]).map(span => span.spanId), [absent], 'only the span the backend did not have');
+  assert.equal(listRecords(dir)[0].status, 'confirmed');
+  await stop('claude', box.transcript);
+  assert.equal(lf.requests.length, 2);
+  assert.equal(listRecords(dir)[0].lateChanges, undefined, 'spans accepted by a read are not reported as changed');
 });
