@@ -180,7 +180,8 @@ test('OMP extension exports a completed turn without prompt or tool bodies', asy
   const env = { PI_CODING_AGENT_DIR: home, TRACE_TO_LANGFUSE: 'true', LANGFUSE_BASE_URL: 'https://example.test',
     CC_LANGFUSE_BASE_URL: 'https://example.test', CC_LANGFUSE_PUBLIC_KEY: 'test', CC_LANGFUSE_SECRET_KEY: 'test',
     CODING_AGENT_OTLP_ENABLED: 'false', LANGFUSE_HOOK_CAPTURE_CONTENT: 'false',
-    CODING_AGENT_GITHUB_METADATA: 'false' }; // keep the test off the network
+    CODING_AGENT_GITHUB_METADATA: 'false', // keep the test off the network
+    LANGFUSE_HOOK_TRANSPORT: 'legacy' }; // this test covers the legacy route
   const before = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   t.after(() => {
     for (const [key, value] of Object.entries(before)) {
@@ -212,7 +213,8 @@ test('OMP extension sends a turn still open when the session shuts down', async 
   const home = mkdtempSync(join(tmpdir(), 'langfuse-omp-close-'));
   const env = { PI_CODING_AGENT_DIR: home, TRACE_TO_LANGFUSE: 'true', LANGFUSE_BASE_URL: 'https://example.test',
     CC_LANGFUSE_BASE_URL: 'https://example.test', CC_LANGFUSE_PUBLIC_KEY: 'test', CC_LANGFUSE_SECRET_KEY: 'test',
-    CODING_AGENT_OTLP_ENABLED: 'false', LANGFUSE_HOOK_CAPTURE_CONTENT: 'false', CODING_AGENT_GITHUB_METADATA: 'false' };
+    CODING_AGENT_OTLP_ENABLED: 'false', LANGFUSE_HOOK_CAPTURE_CONTENT: 'false', CODING_AGENT_GITHUB_METADATA: 'false',
+    LANGFUSE_HOOK_TRANSPORT: 'legacy' };
   const before = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   t.after(() => {
     for (const [key, value] of Object.entries(before)) {

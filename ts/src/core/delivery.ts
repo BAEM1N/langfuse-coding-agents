@@ -39,6 +39,57 @@ export interface DeliveryRecord {
   updatedAt: string;
 }
 
+const TRANSPORT_FILE = '.transport.json';
+const OTLP_RETRY_MS = 24 * 60 * 60 * 1000;
+
+/** What this agent home has learned about reaching Langfuse. */
+export interface TransportState {
+  /** When turns from this home first went to Langfuse over OTLP. */
+  otlpSince: string;
+  /** An earlier runtime, which used legacy ingestion, ran in this home before that. */
+  legacyBefore: boolean;
+  /** The server answered the OTLP endpoint with "not found": it predates OTLP ingestion. */
+  otlpUnavailableAt?: string;
+}
+
+function readTransport(dir: string): TransportState | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(join(dir, TRANSPORT_FILE), 'utf8')) as TransportState;
+    return typeof parsed?.otlpSince === 'string' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeTransport(dir: string, state: TransportState): void {
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, TRANSPORT_FILE);
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state));
+  renameSync(tmp, path);
+}
+
+/** Recorded on the first OTLP delivery from this home. `legacyBefore` is evaluated by the caller once. */
+export function transportState(dir: string, legacyBefore: () => boolean): TransportState {
+  const known = readTransport(dir);
+  if (known) return known;
+  const created: TransportState = { otlpSince: new Date().toISOString(), legacyBefore: legacyBefore() };
+  try { writeTransport(dir, created); } catch { /* decided again next run */ }
+  return created;
+}
+
+/** True while a recent attempt found no OTLP endpoint on the server. Tried again after a day. */
+export function otlpUnavailable(dir: string, now = Date.now()): boolean {
+  const at = readTransport(dir)?.otlpUnavailableAt;
+  return Boolean(at) && now - Date.parse(at!) < OTLP_RETRY_MS;
+}
+
+export function setOtlpUnavailable(dir: string, unavailable: boolean): void {
+  const state = readTransport(dir) ?? { otlpSince: new Date().toISOString(), legacyBefore: true };
+  if (Boolean(state.otlpUnavailableAt) === unavailable) return;
+  try { writeTransport(dir, { ...state, otlpUnavailableAt: unavailable ? new Date().toISOString() : undefined }); } catch { /* best effort */ }
+}
+
 export const MAX_ATTEMPTS = 5;
 /** Stored in `spans` for an ID a read of the backend found, when its content hash was not kept. */
 export const VERIFIED = 'verified';
@@ -149,7 +200,7 @@ export function prune(dir: string, now = Date.now()): void {
     closeSync(openSync(marker, 'a'));
     utimesSync(marker, new Date(now), new Date(now));
     for (const name of readdirSync(dir)) {
-      if (name === '.pruned') continue;
+      if (name.startsWith('.')) continue; // markers, not records
       const path = join(dir, name);
       const limit = name.endsWith('.json') ? RETENTION_MS : LOCK_STALE_MS * 5;
       try { if (now - statSync(path).mtimeMs > limit) unlinkSync(path); } catch { /* raced with another process */ }

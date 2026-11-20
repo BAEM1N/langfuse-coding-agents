@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import type { Config } from './config.ts';
+import { otlpUnavailable } from './delivery.ts';
 import type { OtlpConfig } from './otlp.ts';
 
 export const LANGFUSE_OTLP_PATH = '/api/public/otel/v1/traces';
@@ -20,6 +22,8 @@ export interface Destination {
   relay: boolean;
   otlp?: OtlpConfig;
   configError?: string;
+  /** Transport was not chosen explicitly: use legacy ingestion if the server has no OTLP endpoint. */
+  legacyFallback?: boolean;
 }
 
 const short = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 8);
@@ -57,6 +61,19 @@ export function langfuseOtlpConfig(config: Config): OtlpConfig {
     timeoutMs: config.timeoutMs };
 }
 
+const project = (config: Config) => '#' + short(config.publicKey ?? '');
+
+export function langfuseOtlpDestination(config: Config): Destination {
+  return { id: 'langfuse-otlp:' + endpointIdentity(config.baseUrl + LANGFUSE_OTLP_PATH) + project(config), kind: 'langfuse-otlp',
+    label: 'Langfuse (OTLP)', idempotent: false, completedOnly: true, relay: false, otlp: langfuseOtlpConfig(config) };
+}
+
+/** Deprecated by Langfuse: kept for servers that predate OTLP ingestion. */
+export function langfuseLegacyDestination(config: Config): Destination {
+  return { id: 'langfuse-legacy:' + endpointIdentity(config.baseUrl + '/api/public/ingestion') + project(config),
+    kind: 'langfuse-legacy', label: 'Langfuse (legacy ingestion, deprecated)', idempotent: true, completedOnly: false, relay: false };
+}
+
 export function resolveDestinations(config: Config): Destination[] {
   const out: Destination[] = [];
   if (config.otlpError) {
@@ -68,13 +85,11 @@ export function resolveDestinations(config: Config): Destination[] {
       idempotent: false, completedOnly: true, relay: true, otlp: config.otlp });
   }
   if (config.enabled && config.publicKey && config.secretKey) {
-    const project = '#' + short(config.publicKey);
-    const otlp = config.langfuseTransport === 'otlp';
-    const destination: Destination = otlp
-      ? { id: 'langfuse-otlp:' + endpointIdentity(config.baseUrl + LANGFUSE_OTLP_PATH) + project, kind: 'langfuse-otlp',
-        label: 'Langfuse (OTLP)', idempotent: false, completedOnly: true, relay: false, otlp: langfuseOtlpConfig(config) }
-      : { id: 'langfuse-legacy:' + endpointIdentity(config.baseUrl + '/api/public/ingestion') + project,
-        kind: 'langfuse-legacy', label: 'Langfuse (legacy ingestion)', idempotent: true, completedOnly: false, relay: false };
+    // `auto` uses OTLP, the supported route, and falls back to legacy ingestion
+    // only for a server found to have no OTLP endpoint.
+    const auto = config.langfuseTransport === 'auto';
+    const otlp = config.langfuseTransport === 'otlp' || (auto && !otlpUnavailable(join(config.agentHome, 'state', 'delivery')));
+    const destination: Destination = otlp ? { ...langfuseOtlpDestination(config), legacyFallback: auto } : langfuseLegacyDestination(config);
     if (config.transportError) destination.configError = config.transportError;
     else if (pointsAtLangfuse(config) && !config.allowDualLangfuse) {
       destination.configError = 'The OTLP receiver already forwards to Langfuse; direct Langfuse export is disabled to avoid ' +

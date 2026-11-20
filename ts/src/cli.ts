@@ -131,12 +131,14 @@ async function cmdDoctor(target: string | undefined): Promise<void> {
       console.log(`  auth: ${a.ok ? 'OK' : 'FAILED'} (${a.message}) - credentials only, not proof of ingestion`);
     }
     const destinations = resolveDestinations(cfg);
-    console.log(`  langfuse transport=${cfg.langfuseTransport}${env.LANGFUSE_HOOK_TRANSPORT ? '' : ' (default; LANGFUSE_HOOK_TRANSPORT unset)'}`);
+    console.log(`  langfuse transport=${cfg.langfuseTransport}${env.LANGFUSE_HOOK_TRANSPORT ? '' : ' (default: OTLP, legacy only if the server has no OTLP endpoint)'}`);
     if (!destinations.length) console.log('  destinations: (none) - nothing will be sent');
     for (const d of destinations) {
       console.log(`  destination: ${d.label} [${d.id}]${d.configError ? `\n    CONFIG ERROR: ${d.configError}` : ''}`);
-      if (d.kind === 'langfuse-legacy' && isLangfuseCloud(cfg.baseUrl)) {
-        console.log('    WARNING: Langfuse Cloud retired legacy trace ingestion on 2026-11-16. Set LANGFUSE_HOOK_TRANSPORT=otlp.');
+      if (d.kind === 'langfuse-legacy') {
+        console.log(isLangfuseCloud(cfg.baseUrl)
+          ? '    WARNING: Langfuse Cloud retired legacy trace ingestion on 2026-11-16: these turns are not stored. Remove LANGFUSE_HOOK_TRANSPORT or set it to otlp.'
+          : '    WARNING: legacy ingestion is deprecated by Langfuse (self-hosted v4 rejects it unless the server runs in legacy or dual write mode). Remove LANGFUSE_HOOK_TRANSPORT to use OTLP.');
       }
       if (d.relay) console.log('    note: a relay accepting a request does not show that its backends stored it');
     }

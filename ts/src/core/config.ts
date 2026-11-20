@@ -21,12 +21,13 @@ export interface Config {
   debug: boolean;
   timeoutMs: number;
   /**
-   * How turns reach Langfuse directly. `legacy` posts to /api/public/ingestion
-   * (self-hosted deployments that still accept it). `otlp` posts to
-   * /api/public/otel/v1/traces. Unset keeps `legacy` so existing installs keep
-   * their destination; switching is always an explicit setting.
+   * How turns reach Langfuse directly. `otlp` posts to /api/public/otel/v1/traces,
+   * the route Langfuse supports. `legacy` posts to /api/public/ingestion, which
+   * Langfuse has deprecated: Cloud no longer stores it and self-hosted v4 rejects
+   * it by default. Unset is `auto`: OTLP, falling back to legacy only when the
+   * server has no OTLP endpoint (self-hosted before v3.22).
    */
-  langfuseTransport: 'legacy' | 'otlp';
+  langfuseTransport: 'legacy' | 'otlp' | 'auto';
   transportError?: string;
   /**
    * A turn with no end marker whose transcript has been idle this long is
@@ -124,13 +125,13 @@ export function loadConfig(agent: TraceAgentName, env: NodeJS.ProcessEnv = proce
   let otlpError: string | undefined;
   try { otlp = loadOtlpConfig(env); } catch { otlpError = 'Invalid OTLP endpoint, protocol, or headers'; }
   const host = pick(env, 'CC_LANGFUSE_HOSTNAME', 'LANGFUSE_HOOK_HOSTNAME') ?? hostname();
-  const transport = (pick(env, 'LANGFUSE_HOOK_TRANSPORT') ?? 'legacy').toLowerCase();
-  const knownTransport = transport === 'legacy' || transport === 'otlp';
+  const transport = (pick(env, 'LANGFUSE_HOOK_TRANSPORT') ?? 'auto').toLowerCase();
+  const knownTransport = transport === 'legacy' || transport === 'otlp' || transport === 'auto';
   return {
     agent,
     agentHome: home,
-    langfuseTransport: transport === 'otlp' ? 'otlp' : 'legacy',
-    transportError: knownTransport ? undefined : 'LANGFUSE_HOOK_TRANSPORT must be legacy or otlp',
+    langfuseTransport: transport === 'otlp' || transport === 'legacy' ? transport : 'auto',
+    transportError: knownTransport ? undefined : 'LANGFUSE_HOOK_TRANSPORT must be auto, otlp or legacy',
     subagents: (pick(env, 'CODING_AGENT_SUBAGENTS') ?? '').toLowerCase() !== 'false',
     subagentTraces: (pick(env, 'CODING_AGENT_SUBAGENT_TRACES') ?? '').toLowerCase() !== 'false',
     staleTurnMs: (() => {

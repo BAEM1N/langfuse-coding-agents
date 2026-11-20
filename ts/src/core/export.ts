@@ -2,8 +2,11 @@ import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Config } from './config.ts';
-import { acquire, contentHash, MAX_ATTEMPTS, prune, readRecord, VERIFIED, writeRecord, type DeliveryRecord } from './delivery.ts';
-import { resolveDestinations, type Destination } from './destinations.ts';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readTraceObservations, withReadApi } from './audit.ts';
+import { acquire, contentHash, MAX_ATTEMPTS, prune, readRecord, setOtlpUnavailable, transportState, VERIFIED, writeRecord,
+  type DeliveryRecord } from './delivery.ts';
+import { langfuseLegacyDestination, resolveDestinations, type Destination } from './destinations.ts';
 import { LangfuseClient, type IngestionEvent, type IngestResult } from './langfuse.ts';
 import type { Logger } from './log.ts';
 import { otlpPayload, otlpSpanId, postOtlp, type OtlpSpan } from './otlp.ts';
@@ -150,6 +153,65 @@ function chunkSpans(spans: OtlpSpan[]): OtlpSpan[][] {
   return chunks;
 }
 
+/**
+ * Did a runtime that used legacy ingestion run in this agent home? It left
+ * read positions without a session ID; adapters that keep no positions left a
+ * log that is older than this run.
+ */
+function ranBefore(stateDir: string): boolean {
+  const positions = join(stateDir, 'langfuse_agent_hooks_state.json');
+  if (existsSync(positions)) {
+    try {
+      const parsed = JSON.parse(readFileSync(positions, 'utf8')) as { transcripts?: Record<string, { sessionId?: string }> };
+      return Object.values(parsed.transcripts ?? {}).some(entry => entry.sessionId === undefined);
+    } catch {
+      return true;
+    }
+  }
+  try {
+    return Date.now() - statSync(join(stateDir, 'langfuse_agent_hooks.log')).birthtimeMs > 5 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A home that used legacy ingestion and now sends over OTLP can meet a turn the
+ * project already holds under legacy observation IDs: the last turn of a
+ * session open across the change, or a turn an adapter looks at again. Sending
+ * it would store it twice. For turns that started before the change, read the
+ * project first. Returns an outcome when nothing more should be sent.
+ */
+async function storedBeforeOtlp(config: Config, destination: Destination, traceId: string, events: IngestionEvent[],
+  observations: IngestionEvent[], hashes: Map<string, string>, dir: string, logger: Logger): Promise<Attempt | undefined> {
+  const state = transportState(dir, () => ranBefore(join(config.agentHome, 'state')));
+  if (!state.legacyBefore) return undefined;
+  const started = Date.parse(String(events.find(event => event.type === 'trace-create')?.body.timestamp));
+  if (!(started < Date.parse(state.otlpSince))) return undefined;
+  let stored: Set<string>;
+  try {
+    const client = new LangfuseClient({ baseUrl: config.baseUrl, publicKey: config.publicKey!, secretKey: config.secretKey!,
+      timeoutMs: config.timeoutMs, logger });
+    stored = new Set((await withReadApi(undefined, api => readTraceObservations(client, api, traceId))).value.map(span => span.id));
+  } catch {
+    return { traceId, status: 'failed', sent: 0, message: 'Could not check whether this earlier turn is already stored', destinationDown: true };
+  }
+  if (!stored.size) return undefined;
+  const present = observations.filter(event => stored.has(otlpSpanId(String(event.body.id))));
+  const record = baseRecord(undefined, traceId, destination.id, events);
+  record.updatedAt = new Date().toISOString();
+  if (!present.length) {
+    Object.assign(record, { status: 'unconfirmed', lastError: 'Stored earlier through legacy ingestion; not sent again over OTLP' });
+    writeRecord(dir, record);
+    return { traceId, status: 'held', sent: 0, message: record.lastError };
+  }
+  for (const event of present) record.spans[String(event.body.id)] = hashes.get(String(event.body.id))!;
+  const complete = present.length === observations.length;
+  record.status = complete ? 'confirmed' : 'partial';
+  writeRecord(dir, record);
+  return complete ? { traceId, status: 'skipped', sent: 0 } : undefined;
+}
+
 async function deliverOtlp(config: Config, destination: Destination, traceId: string, events: IngestionEvent[],
   dir: string, logger: Logger): Promise<Attempt> {
   const otlp = destination.otlp!;
@@ -157,6 +219,10 @@ async function deliverOtlp(config: Config, destination: Destination, traceId: st
   const langfuse = destination.kind === 'langfuse-otlp' || config.otlpForwardsToLangfuse;
   const observations = events.filter(event => event.type !== 'trace-create' && (langfuse || event.type !== 'event-create'));
   const hashes = new Map(observations.map(event => [String(event.body.id), contentHash(event)]));
+  if (destination.kind === 'langfuse-otlp' && !readRecord(dir, traceId, destination.id)) {
+    const settled = await storedBeforeOtlp(config, destination, traceId, events, observations, hashes, dir, logger);
+    if (settled) return settled;
+  }
   const previous = readRecord(dir, traceId, destination.id);
   // The receiver may already hold these spans and does not deduplicate span IDs,
   // so an unknown outcome is never retried without an operator's decision.
@@ -291,8 +357,16 @@ export async function exportEvents(config: Config, events: IngestionEvent[], log
     const group = groups.get(id);
     if (group) group.push(event); else groups.set(id, [event]);
   }
-  const destinations = await Promise.all(resolveDestinations(config).map(destination =>
-    deliver(config, destination, groups, dir, logger)));
+  const targets = resolveDestinations(config);
+  const destinations = await Promise.all(targets.map(destination => deliver(config, destination, groups, dir, logger)));
+  for (const [i, target] of targets.entries()) {
+    // No OTLP endpoint on this server (self-hosted before v3.22) and no transport
+    // was chosen: use legacy ingestion, and remember for a day so it is not probed every turn.
+    if (!target.legacyFallback || !destinations[i].traces.some(trace => trace.httpStatus === 404 || trace.httpStatus === 405)) continue;
+    setOtlpUnavailable(dir, true);
+    logger.warn('Langfuse has no OTLP endpoint at this URL; using legacy ingestion, which Langfuse has deprecated. Upgrade the server, or check LANGFUSE_BASE_URL.');
+    destinations[i] = await deliver(config, langfuseLegacyDestination(config), groups, dir, logger);
+  }
   prune(dir);
 
   const errors: IngestResult['errors'] = [];

@@ -19,17 +19,18 @@ const options = parseArgs({ options: {
 
 if (options.help) {
   console.log('Usage: setup [--name NAME] [--device LABEL] [--environment NAME] [--agents LIST]');
-  console.log('       [--langfuse-transport otlp|legacy]');
+  console.log('       [--langfuse-transport auto|otlp|legacy]');
   console.log('       [--collector OTELCOL_BINARY] [--collector-route tempo|both] [--tempo OTLP_HTTP_TRACE_URL]');
   console.log('       [--capture-content] [--python PYTHON]');
   console.log('Agents: claude,codex,omp,antigravity,copilot,opencode,deepagents');
-  console.log('--langfuse-transport  otlp: Langfuse Cloud and self-hosted v4. legacy: older self-hosted. Unset: no change.');
+  console.log('--langfuse-transport  auto (default when unset): OTLP, the route Langfuse supports, with legacy ingestion only for a');
+  console.log('                      server that has no OTLP endpoint. otlp: OTLP only. legacy: deprecated ingestion API only.');
   console.log('--collector-route     tempo: hooks send Langfuse directly, Collector feeds Tempo (default).');
   console.log('                      both: hooks send only to the Collector, which feeds Langfuse and Tempo.');
   process.exit(0);
 }
-if (options['langfuse-transport'] && !['otlp', 'legacy'].includes(options['langfuse-transport'])) {
-  throw Error('--langfuse-transport must be otlp or legacy');
+if (options['langfuse-transport'] && !['auto', 'otlp', 'legacy'].includes(options['langfuse-transport'])) {
+  throw Error('--langfuse-transport must be auto, otlp or legacy');
 }
 if (options['collector-route'] && !['tempo', 'both'].includes(options['collector-route'])) {
   throw Error('--collector-route must be tempo or both');
@@ -96,7 +97,7 @@ if (options['capture-content']) {
   set('OTEL_CAPTURE_CONTENT', 'true');
 }
 set('CODING_AGENT_TEMPO_TRACES_URL', options.tempo);
-// The transport changes only when asked. An existing install keeps its destination.
+// Written only when asked. Unset means auto: OTLP, with legacy ingestion as a fallback for old servers.
 set('LANGFUSE_HOOK_TRANSPORT', options['langfuse-transport']);
 if (options.collector) {
   if (!existing.publicKey || !existing.secretKey) throw Error('Set Langfuse project keys before installing the Collector relay');
@@ -180,9 +181,11 @@ console.log(`Settings: ${configPath}`);
 const final = loadConfig('claude', { ...process.env });
 for (const destination of resolveDestinations(final)) {
   console.log(`Destination: ${destination.label}${destination.configError ? ` - CONFIG ERROR: ${destination.configError}` : ''}`);
-  if (destination.kind === 'langfuse-legacy' && isLangfuseCloud(final.baseUrl)) {
-    console.log('  Langfuse Cloud retired legacy trace ingestion on 2026-11-16, so these turns are not stored.');
-    console.log('  Re-run with --langfuse-transport otlp to switch. Nothing was changed.');
+  if (destination.kind === 'langfuse-legacy') {
+    console.log(isLangfuseCloud(final.baseUrl)
+      ? '  Langfuse Cloud retired legacy trace ingestion on 2026-11-16, so these turns are not stored.'
+      : '  Legacy ingestion is deprecated by Langfuse; self-hosted v4 rejects it outside the legacy and dual write modes.');
+    console.log('  Re-run with --langfuse-transport auto to use OTLP.');
   }
 }
 console.log('Installing hooks does not show that traces are stored. Run one turn, then `doctor` and `verify <agent> <traceId>`.');

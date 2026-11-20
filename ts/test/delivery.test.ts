@@ -2,7 +2,7 @@
 // Nothing here reads real agent settings or sends to a real backend.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -469,7 +469,11 @@ test('destination identifiers carry no credentials, and transport is never switc
   const env = (extra: Record<string, string>): NodeJS.ProcessEnv => ({ TRACE_TO_LANGFUSE: 'true', LANGFUSE_PUBLIC_KEY: PUBLIC_KEY,
     LANGFUSE_SECRET_KEY: SECRET_KEY, CODING_AGENT_GITHUB_METADATA: 'false', ...extra });
   const [legacy] = resolveDestinations(loadConfig('claude', env({ LANGFUSE_BASE_URL: 'https://cloud.langfuse.com' })));
-  assert.equal(legacy.kind, 'langfuse-legacy', 'unset transport keeps the existing destination, even on Cloud');
+  assert.equal(legacy.kind, 'langfuse-otlp', 'unset transport uses the supported route, not the deprecated one');
+  assert.equal(legacy.legacyFallback, true, 'falling back only if the server has no OTLP endpoint');
+  const [asked] = resolveDestinations(loadConfig('claude', env({ LANGFUSE_BASE_URL: 'https://lf.example.test', LANGFUSE_HOOK_TRANSPORT: 'legacy' })));
+  assert.equal(asked.kind, 'langfuse-legacy', 'legacy ingestion stays available when asked for');
+  assert.equal(asked.legacyFallback, undefined);
   const [direct, other] = resolveDestinations(loadConfig('claude', env({ LANGFUSE_BASE_URL: 'https://lf.example.test',
     LANGFUSE_HOOK_TRANSPORT: 'otlp', CODING_AGENT_OTLP_TRACES_ENDPOINT: 'https://user:pass@tempo.example.test/v1/traces?token=abc' })));
   assert.equal(other.kind, 'langfuse-otlp');
@@ -481,7 +485,7 @@ test('destination identifiers carry no credentials, and transport is never switc
   }
   assert.notEqual(legacy.id, other.id, 'legacy and OTLP delivery are tracked separately');
   const [invalid] = resolveDestinations(loadConfig('claude', env({ LANGFUSE_HOOK_TRANSPORT: 'grpc' })));
-  assert.match(invalid.configError ?? '', /legacy or otlp/);
+  assert.match(invalid.configError ?? '', /auto, otlp or legacy/);
 });
 
 test('the Langfuse route keeps what legacy ingestion carried: events, metadata and the body limit', async (t) => {
@@ -569,4 +573,59 @@ test('an unconfirmed turn is settled against what the backend holds: found spans
   await stop('claude', box.transcript);
   assert.equal(lf.requests.length, 2);
   assert.equal(listRecords(dir)[0].lateChanges, undefined, 'spans accepted by a read are not reported as changed');
+});
+
+test('with no transport chosen, a server without an OTLP endpoint gets legacy ingestion, and is not probed again', async (t) => {
+  const lf = await receiver(t, request => request.path === '/api/public/otel/v1/traces' ? { status: 404 }
+    : { status: 207, body: '{"successes":[],"errors":[]}' });
+  const settings = langfuse(lf.url);
+  delete (settings as Record<string, string>).LANGFUSE_HOOK_TRANSPORT;
+  const box = sandbox(t, settings);
+  const rows = fixture('claude-transcript.jsonl');
+  writeFileSync(box.transcript, rows.slice(0, 8).join('\n') + '\n');
+  const first = await stop('claude', box.transcript);
+  assert.equal(first.errors, 0, 'the turn is delivered in the same run');
+  assert.deepEqual(lf.requests.map(request => request.path), ['/api/public/otel/v1/traces', '/api/public/ingestion']);
+  assert.deepEqual(statuses(first, 'langfuse-legacy'), ['delivered']);
+  assert.match(readFileSync(logPath(loadConfig('claude')), 'utf8'), /no OTLP endpoint.*deprecated/);
+
+  appendFileSync(box.transcript, rows.slice(8).join('\n') + '\n');
+  await stop('claude', box.transcript);
+  assert.ok(lf.requests.slice(2).every(request => request.path === '/api/public/ingestion'), 'OTLP is not probed on every turn');
+});
+
+test('a home that used legacy ingestion does not resend an earlier turn over OTLP', async (t) => {
+  const posts: any[] = [];
+  let storedByLegacy = true;
+  const lf = await receiver(t, (request) => {
+    if (request.path.startsWith('/api/public/v2/observations')) {
+      // The project already holds the turn under legacy observation IDs.
+      return { body: JSON.stringify({ data: storedByLegacy ? [{ id: 'legacy-observation-id', traceId: 'x', type: 'GENERATION' }] : [], meta: {} }) };
+    }
+    posts.push(request);
+    return {};
+  });
+  const box = sandbox(t, langfuse(lf.url));
+  // Read positions in the old format are what an earlier runtime leaves behind.
+  const state = join(box.env.CLAUDE_CONFIG_DIR, 'state');
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, 'langfuse_agent_hooks_state.json'), JSON.stringify({ version: 1,
+    transcripts: { [box.transcript]: { offset: 0, turnsBefore: 0, updatedAt: new Date().toISOString() } } }));
+  const rows = fixture('claude-transcript.jsonl');
+  writeFileSync(box.transcript, rows.slice(0, 8).join('\n') + '\n');
+  const first = await stop('claude', box.transcript);
+  assert.deepEqual(statuses(first, 'langfuse-otlp'), ['held']);
+  assert.equal(posts.length, 0, 'the turn legacy ingestion stored is not sent a second time');
+  assert.equal(first.errors, 0, 'and that is not an error');
+
+  // A turn that starts after the change is sent normally, with no read first.
+  storedByLegacy = false;
+  const later = rows.slice(8).map(line => JSON.parse(line));
+  const shift = Date.now() + 60_000 - Date.parse(later[0].timestamp);
+  for (const row of later) if (row.timestamp) row.timestamp = new Date(Date.parse(row.timestamp) + shift).toISOString();
+  appendFileSync(box.transcript, later.map(row => JSON.stringify(row)).join('\n') + '\n');
+  const reads = lf.requests.length - posts.length;
+  await stop('claude', box.transcript);
+  assert.equal(posts.length, 1);
+  assert.equal(lf.requests.length - posts.length, reads, 'no project read for a turn that began after the change');
 });
