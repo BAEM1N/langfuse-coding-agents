@@ -26,7 +26,7 @@ LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
 ```
 
-共用 Node 运行时通过 Langfuse 支持的 OTLP（`/api/public/otel/v1/traces`）发送数据。自 2026-11-16 起，Langfuse Cloud 不再保存发送到 `/api/public/ingestion` 的链路事件，自托管 v4 在过渡写入模式之外也会拒绝。只有当服务器没有 OTLP 端点（v3.22 之前的自托管）时，才会改用旧的 `/api/public/ingestion`。设置 `LANGFUSE_HOOK_TRANSPORT=legacy` 可固定使用旧路径，但 Langfuse 已将其弃用。子代理（Claude Code 代理、Codex 线程、Oh My Pi 任务会话）既作为父轮次链路中的 span 记录，也作为带 `subagent` 标签的独立链路记录，令牌只在父轮次一侧统计。用 `node ts/src/cli.ts verify claude <traceId>` 确认数据已保存，用 `node ts/src/cli.ts coverage claude` 与本地记录对照。详见 [README.md](README.md#quick-start)。
+共用 Node 运行时通过 Langfuse 支持的 OTLP（`/api/public/otel/v1/traces`）发送数据。自 2026-11-16 起，Langfuse Cloud 不再保存发送到 `/api/public/ingestion` 的链路事件，自托管 v4 在过渡写入模式之外也会拒绝。参考部署为自托管 4.83 开启 `LANGFUSE_MIGRATION_V4_WRITE_MODE=events_only`（连 `/api/public/ingestion` 也完全关闭，是 v4 中最严格的模式），`selftest` 在该环境下的写入、回读、删除均已通过。只有当服务器没有 OTLP 端点（v3.22 之前的自托管）时，才会改用旧的 `/api/public/ingestion`。设置 `LANGFUSE_HOOK_TRANSPORT=legacy` 可固定使用旧路径，但 Langfuse 已将其弃用。子代理（Claude Code 代理、Codex 线程、Oh My Pi 任务会话）既作为父轮次链路中的 span 记录，也作为带 `subagent` 标签的独立链路记录，令牌只在父轮次一侧统计。用 `node ts/src/cli.ts verify claude <traceId>` 确认数据已保存，用 `node ts/src/cli.ts coverage claude` 与本地记录对照。详见 [README.md](README.md#quick-start)。
 
 ### 安装代理钩子
 

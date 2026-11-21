@@ -67,7 +67,7 @@ LANGFUSE_SECRET_KEY=sk-lf-your-project-key
 | `otlp` | OTLP만, 폴백 없음 | 주소가 틀렸을 때 폴백 대신 실패하게 하려는 경우 |
 | `legacy` | `/api/public/ingestion`만 | Langfuse가 사용 중단한 경로. OTLP 엔드포인트가 없는 v3.22 이전 자체 호스팅 |
 
-Langfuse Cloud는 2026-11-16부터 `/api/public/ingestion`으로 들어온 트레이스 이벤트를 저장하지 않고, 자체 호스팅 v4도 전환용 쓰기 모드(`legacy`, `dual`) 밖에서는 거부합니다. 이 기본값 이전에 설치한 환경은 런타임을 갱신하면 OTLP로 넘어갑니다. 전환 이전에 시작된 턴은 프로젝트를 먼저 조회하므로, legacy로 이미 저장된 턴이 다시 저장되지 않습니다. legacy를 유지하려면 `LANGFUSE_HOOK_TRANSPORT=legacy`를 설정하세요. 이 경우 `doctor`가 사용 중단 경고를 출력합니다.
+Langfuse Cloud는 2026-11-16부터 `/api/public/ingestion`으로 들어온 트레이스 이벤트를 저장하지 않고, 자체 호스팅 v4도 전환용 쓰기 모드(`legacy`, `dual`) 밖에서는 거부합니다. 이 기본값 이전에 설치한 환경은 런타임을 갱신하면 OTLP로 넘어갑니다. 전환 이전에 시작된 턴은 프로젝트를 먼저 조회하므로, legacy로 이미 저장된 턴이 다시 저장되지 않습니다. legacy를 유지하려면 `LANGFUSE_HOOK_TRANSPORT=legacy`를 설정하세요. 이 경우 `doctor`가 사용 중단 경고를 출력합니다. 기준 배포 환경은 자체 호스팅 4.83에서 `LANGFUSE_MIGRATION_V4_WRITE_MODE=events_only`를 켠 구성입니다. `/api/public/ingestion`까지 완전히 닫히는 v4에서 가장 엄격한 모드인데, 이 환경에서 `selftest`가 쓰기·조회·삭제까지 전부 통과합니다.
 
 턴은 끝난 뒤에 한 번 보내고, Langfuse가 받은 턴은 다시 보내지 않습니다. Langfuse v4는 같은 스팬 ID를 중복 제거하지 않기 때문입니다. Stop 이벤트 없이 끝난 턴은 트랜스크립트가 1시간 동안 변하지 않으면 종료 처리해 전송합니다. 프롬프트와 도구 본문, 턴 이벤트, 어댑터 메타데이터는 마스킹 후 문자열 길이 제한(`LANGFUSE_HOOK_MAX_CHARS`, 기본 20,000자)을 적용해 전송합니다. 본문을 빼려면 `LANGFUSE_HOOK_CAPTURE_CONTENT=false`를 설정하세요. [수집되지 않는 것](docs/setup-agent-observability.md#what-is-not-captured)과 [사용 중단 현황](docs/setup-agent-observability.md#deprecation-status)도 확인하세요.
 

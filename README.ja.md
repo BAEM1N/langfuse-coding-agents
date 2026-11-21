@@ -26,7 +26,7 @@ LANGFUSE_PUBLIC_KEY=pk-lf-your-project-key
 LANGFUSE_SECRET_KEY=sk-lf-your-project-key
 ```
 
-共通 Node ランタイムは、Langfuse がサポートする OTLP（`/api/public/otel/v1/traces`）で送信します。Langfuse Cloud は 2026-11-16 以降、`/api/public/ingestion` に届いたトレースイベントを保存せず、セルフホスト v4 も移行用の書き込みモード以外では拒否します。サーバーに OTLP エンドポイントがない場合（v3.22 より前のセルフホスト）に限り、従来の `/api/public/ingestion` に切り替わります。`LANGFUSE_HOOK_TRANSPORT=legacy` で従来の経路に固定できますが、Langfuse では非推奨です。サブエージェント（Claude Code のエージェント、Codex のスレッド、Oh My Pi のタスクセッション）は親ターンのトレース内のスパンと、`subagent` タグ付きの個別トレースの両方に記録され、トークンは親ターン側だけで集計されます。保存の確認には `node ts/src/cli.ts verify claude <traceId>`、ローカルとの突き合わせには `node ts/src/cli.ts coverage claude` を使います。詳細は [README.md](README.md#quick-start) を参照してください。
+共通 Node ランタイムは、Langfuse がサポートする OTLP（`/api/public/otel/v1/traces`）で送信します。Langfuse Cloud は 2026-11-16 以降、`/api/public/ingestion` に届いたトレースイベントを保存せず、セルフホスト v4 も移行用の書き込みモード以外では拒否します。基準環境は、`/api/public/ingestion` までも閉じる v4 で最も厳しい構成（セルフホスト 4.83、`LANGFUSE_MIGRATION_V4_WRITE_MODE=events_only`）であり、この環境で `selftest` が送信・読み戻し・削除まで通過することを確認しています。サーバーに OTLP エンドポイントがない場合（v3.22 より前のセルフホスト）に限り、従来の `/api/public/ingestion` に切り替わります。`LANGFUSE_HOOK_TRANSPORT=legacy` で従来の経路に固定できますが、Langfuse では非推奨です。サブエージェント（Claude Code のエージェント、Codex のスレッド、Oh My Pi のタスクセッション）は親ターンのトレース内のスパンと、`subagent` タグ付きの個別トレースの両方に記録され、トークンは親ターン側だけで集計されます。保存の確認には `node ts/src/cli.ts verify claude <traceId>`、ローカルとの突き合わせには `node ts/src/cli.ts coverage claude` を使います。詳細は [README.md](README.md#quick-start) を参照してください。
 
 ### エージェントのフックをインストール
 
