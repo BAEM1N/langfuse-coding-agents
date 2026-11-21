@@ -635,7 +635,7 @@ test('verify reads a trace back from Tempo, and export-events takes a turn from 
   const backend = await receiver(t, (request) => {
     if (request.path.startsWith('/api/traces/')) {
       // Tempo's trace-by-ID response: batches of scope spans.
-      return request.path.endsWith(traceId) ? { body: JSON.stringify({ batches: [{ scopeSpans: [{ spans: [{ spanId: 'a' }, { spanId: 'b' }, { spanId: 'c' }] }] }] }) }
+      return request.path.endsWith(traceId) ? { body: JSON.stringify({ batches: [{ scopeSpans: [{ spans: [{ spanId: 'AAAAAAAAAAE=' }, { spanId: 'AAAAAAAAAAI=' }, { spanId: 'AAAAAAAAAAM=' }] }] }] }) }
         : { status: 404 };
     }
     if (request.path.startsWith('/api/public/v2/observations')) return { body: JSON.stringify({ data: [{ id: 'o1', traceId, type: 'AGENT' }], meta: {} }) };
@@ -644,7 +644,7 @@ test('verify reads a trace back from Tempo, and export-events takes a turn from 
   const box = sandbox(t, langfuse(backend.url));
   const found = await cliProcess(box.env, ['verify', 'claude', traceId, '--tempo', backend.url]);
   const report = JSON.parse(found.output);
-  assert.deepEqual(report.tempo, { stored: 3, verdict: 'STORED' });
+  assert.deepEqual(report.tempo, { stored: 3, duplicates: 0, verdict: 'STORED' });
   assert.equal(report.langfuse.verdict, 'STORED');
   assert.equal(found.code, 0);
   const missing = JSON.parse((await cliProcess(box.env, ['verify', 'claude', 'f'.repeat(32), '--tempo', backend.url])).output);

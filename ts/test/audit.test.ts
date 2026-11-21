@@ -103,3 +103,22 @@ test('the legacy audit keeps reading stored traces', async (t) => {
   assert.match(paths[0], /^\/api\/public\/traces\?limit=5&fromTimestamp=/);
   assert.equal(paths[1], '/api/public/traces/t1');
 });
+
+test('Tempo span IDs are read as hex whether Tempo answers in base64 or hex', async () => {
+  const { createServer } = await import('node:http');
+  const { readTempoSpanIds } = await import('../src/core/audit.ts');
+  const hex = '0123456789abcdef';
+  const server = createServer((req, res) => {
+    if (req.url?.endsWith('/missing')) { res.statusCode = 404; res.end(); return; }
+    if (req.url?.endsWith('/broken')) { res.statusCode = 500; res.end(); return; }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ batches: [{ scopeSpans: [{ spans: [{ spanId: Buffer.from(hex, 'hex').toString('base64') }, { spanId: hex.toUpperCase() }] }] }] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = 'http://127.0.0.1:' + (server.address() as { port: number }).port;
+  try {
+    assert.deepEqual(await readTempoSpanIds(base, 'abc'), [hex, hex]);
+    assert.equal(await readTempoSpanIds(base, 'missing'), undefined);
+    await assert.rejects(readTempoSpanIds(base, 'broken'), /HTTP 500/);
+  } finally { server.close(); }
+});

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
-import { readObservations, withReadApi } from './audit.ts';
+import { readObservations, readTempoSpanIds, withReadApi } from './audit.ts';
 import { subagentTraceIdFor, traceIdFor } from './batch.ts';
 import type { Config } from './config.ts';
 import { listRecords } from './delivery.ts';
@@ -375,6 +375,12 @@ export interface SelfTestOptions {
   /** After deleting: how many times, and how far apart, to look for a trace that surfaced late. */
   settleChecks?: number;
   settleMs?: number;
+  /**
+   * Also send through this OTLP relay (a Collector receiver URL) and read the
+   * turn back from the Tempo query URL, to check the second copy as well.
+   */
+  relay?: string;
+  tempo?: string;
 }
 
 /**
@@ -415,7 +421,9 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
     CC_LANGFUSE_PUBLIC_KEY: '', CC_LANGFUSE_SECRET_KEY: '', CC_LANGFUSE_BASE_URL: '', CC_LANGFUSE_USER_ID: '',
     LANGFUSE_HOOK_TRANSPORT: 'otlp', CODING_AGENT_OTLP_ENABLED: 'false', CODING_AGENT_GITHUB_METADATA: 'false',
     LANGFUSE_TRACING_ENVIRONMENT: ENVIRONMENT, CODING_AGENT_USER_NAME: 'hook-selftest', LANGFUSE_HOOK_CAPTURE_CONTENT: 'true',
-    CODING_AGENT_SUBAGENTS: 'true', CODING_AGENT_SUBAGENT_TRACES: 'true', LANGFUSE_HOOK_STALE_TURN_MINUTES: '0' };
+    CODING_AGENT_SUBAGENTS: 'true', CODING_AGENT_SUBAGENT_TRACES: 'true', LANGFUSE_HOOK_STALE_TURN_MINUTES: '0',
+    ...(options.relay ? { CODING_AGENT_OTLP_ENABLED: 'true', CODING_AGENT_OTLP_TRACES_ENDPOINT: options.relay, OTEL_CAPTURE_CONTENT: 'true',
+      OTEL_EXPORTER_OTLP_ENDPOINT: '', OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: '', OTEL_EXPORTER_OTLP_HEADERS: '', OTEL_EXPORTER_OTLP_TRACES_HEADERS: '' } : {}) };
   const previous = new Map(Object.keys(settings).map(key => [key, process.env[key]]));
   Object.assign(process.env, settings);
   const checks: Array<{ check: string; ok: boolean; detail?: string }> = [];
@@ -431,7 +439,7 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
     if (!statuses && scenario.deliveryHome) {
       // This integration reports nothing back, so read what it recorded about the delivery.
       statuses = listRecords(join(scenario.deliveryHome, 'state', 'delivery')).filter(record => record.destination.startsWith('langfuse-otlp'))
-        .map(record => record.status === 'confirmed' ? 'delivered' : ` `.trim());
+        .map(record => record.status === 'confirmed' ? 'delivered' : record.status);
     }
     if (statuses) {
       check('accepted by the OTLP endpoint', statuses.length === 2 && statuses.every(status => status === 'delivered'), statuses.join('; ') || 'nothing was sent');
@@ -502,6 +510,29 @@ export async function selfTest(cfg: Config, options: SelfTestOptions) {
       check('sub-agent trace carries no usage of its own', usage.length === 0, usage.length + ' observation(s) with usage');
       check('sub-agent trace: session, tag and link back', run.sessionId === session && (run.tags ?? []).includes('subagent')
         && run.metadata?.parentTraceId === turnId, JSON.stringify({ sessionId: run.sessionId, tags: run.tags, parentTraceId: run.metadata?.parentTraceId }));
+    }
+    if (options.tempo) {
+      // The relay queues and Tempo flushes, so the second copy shows up a little later than the first.
+      const wanted = [['turn', turnId, turn], ['sub-agent', runId, run]] as const;
+      for (const [label, id, stored] of wanted) {
+        // Events are attached to spans on this route, so compare spans with the observations that are spans.
+        const expectedIds = (stored?.observations ?? []).filter(observation => observation.type !== 'EVENT').map(observation => observation.id);
+        let spans: string[] | undefined;
+        let problem: string | undefined;
+        const until = Date.now() + 60_000;
+        do {
+          try { spans = await readTempoSpanIds(options.tempo, id); problem = undefined; } catch (error) { problem = (error as Error).message; }
+          if (spans && spans.length >= expectedIds.length) break;
+          await wait(3000);
+        } while (Date.now() < until);
+        check(`Tempo: ${label} trace stored`, Boolean(spans?.length), problem ?? 'not found by trace ID ' + id);
+        if (spans?.length) {
+          check(`Tempo: ${label} trace has no span twice`, new Set(spans).size === spans.length, spans.length + ' spans, ' + new Set(spans).size + ' distinct');
+          const missing = expectedIds.filter(expected => !spans.includes(expected));
+          check(`Tempo: ${label} trace holds the same spans as Langfuse`, expectedIds.length > 0 && missing.length === 0 && spans.length === expectedIds.length,
+            `Langfuse ${expectedIds.length}, Tempo ${spans.length}, missing ${missing.length}`);
+        }
+      }
     }
     if (!options.keep) {
       const results = await Promise.all([client.deleteTrace(turnId), client.deleteTrace(runId)]);

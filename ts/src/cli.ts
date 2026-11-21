@@ -9,14 +9,14 @@
 //   node src/cli.ts audit <claude|codex|omp|antigravity> <transcript.jsonl>
 //   node src/cli.ts verify <agent> <traceId> [--api v2|legacy] [--tempo URL] [--reconcile]
 //   node src/cli.ts coverage <claude|codex> [--since ISO] [--until ISO] [--deep N]
-//   node src/cli.ts selftest [claude|codex|omp|copilot|opencode|antigravity|all] [--keep] | selftest --cleanup   (sends a synthetic turn to the project, checks it, deletes it)
+//   node src/cli.ts selftest [claude|codex|omp|copilot|opencode|antigravity|all] [--keep] [--relay URL --tempo URL] | selftest --cleanup   (sends a synthetic turn to the project, checks it, deletes it)
 //   node src/cli.ts audit-langfuse [claude|codex] [--limit N] [--api v2|legacy] [--from ISO] [--to ISO]
 //   node src/cli.ts backfill <claude|codex> <transcript.jsonl> --from ISO --to ISO [--session ID] [--dry-run]
 
 import { existsSync, readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { loadConfig } from './core/config.ts';
-import { auditLangfuse, auditLangfuseV2, readTraceObservations, summarizeTurns, withReadApi } from './core/audit.ts';
+import { auditLangfuse, auditLangfuseV2, readTempoSpanIds, readTraceObservations, summarizeTurns, withReadApi } from './core/audit.ts';
 import { otlpSpanId } from './core/otlp.ts';
 import { parseOmpSession } from './adapters/omp.ts';
 import { readCopilotTurn } from './adapters/copilot.ts';
@@ -306,7 +306,8 @@ async function cmdSelfTest(agent: string | undefined, args: string[]): Promise<v
     // Keys come from that agent's own settings, as they do when its integration runs.
     const cfg = loadConfig(format, { ...process.env });
     try {
-      const report = await selfTest(cfg, { format, keep: !!flag(args, 'keep'), api: readApi(args) });
+      const text = (name: string) => { const value = flag(args, name); return typeof value === 'string' ? value : undefined; };
+      const report = await selfTest(cfg, { format, keep: !!flag(args, 'keep'), api: readApi(args), relay: text('relay'), tempo: text('tempo') });
       console.log(JSON.stringify(report, null, 2));
       if (!report.ok) process.exitCode = 1;
     } catch (error) {
@@ -388,18 +389,16 @@ async function cmdVerify(agent: string | undefined, traceId: string | undefined,
   const tempo = flag(args, 'tempo');
   if (typeof tempo === 'string') {
     try {
-      const res = await fetch(new URL('/api/traces/' + traceId, tempo), { signal: AbortSignal.timeout(15000), redirect: 'error' });
-      if (res.status === 404) { report.tempo = { verdict: 'NOT FOUND' }; ok = false; }
-      else if (!res.ok) { report.tempo = { verdict: 'READ FAILED', detail: 'HTTP ' + res.status }; ok = false; }
+      const spans = await readTempoSpanIds(tempo, traceId);
+      if (!spans?.length) { report.tempo = { verdict: 'NOT FOUND' }; ok = false; }
       else {
-        const body = await res.json() as { batches?: any[]; resourceSpans?: any[] };
-        const spans = (body.batches ?? body.resourceSpans ?? []).flatMap((batch) =>
-          (batch.scopeSpans ?? batch.instrumentationLibrarySpans ?? []).flatMap((scope: any) => scope.spans ?? []));
-        report.tempo = { stored: spans.length, verdict: spans.length ? 'STORED' : 'NOT FOUND' };
-        ok &&= spans.length > 0;
+        const duplicates = spans.length - new Set(spans).size;
+        report.tempo = { stored: spans.length, duplicates, verdict: duplicates ? 'DUPLICATED' : 'STORED' };
+        ok &&= duplicates === 0;
       }
-    } catch {
-      report.tempo = { verdict: 'READ FAILED', detail: 'Tempo query endpoint unreachable' };
+    } catch (error) {
+      const reason = (error as Error).message;
+      report.tempo = { verdict: 'READ FAILED', detail: /^HTTP d+$/.test(reason) ? reason : 'Tempo query endpoint unreachable' };
       ok = false;
     }
   } else {

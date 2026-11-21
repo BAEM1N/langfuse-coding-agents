@@ -87,7 +87,7 @@ Optional:
 ## Commands
 
 ```bash
-node src/cli.ts selftest all [--keep]     # claude | codex | omp | copilot | opencode | antigravity | all: synthetic turn with a sub-agent, sent, read back, compared, deleted
+node src/cli.ts selftest all [--keep] [--relay URL --tempo URL]     # claude | codex | omp | copilot | opencode | antigravity | all: synthetic turn with a sub-agent, sent, read back, compared, deleted
 node src/cli.ts doctor                    # config, destinations, auth check, recent delivery results, hooks, log
 node src/cli.ts delivery claude           # turns not confirmed; `delivery claude clear <traceId>` allows a resend
 node src/cli.ts verify claude <traceId> [--tempo http://127.0.0.1:13200] [--reconcile]   # read the trace back; settle an unconfirmed turn

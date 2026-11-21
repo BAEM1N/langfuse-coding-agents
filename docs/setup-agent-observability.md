@@ -334,6 +334,21 @@ that surfaced late is not left behind. If a run is interrupted,
 `node ts/src/cli.ts selftest --cleanup` deletes everything in the
 `hook-selftest` environment.
 
+To check the second copy as well, name the Collector receiver and the Tempo
+query URL:
+
+```sh
+node ts/src/cli.ts selftest all --relay http://127.0.0.1:14318/v1/traces --tempo http://127.0.0.1:3200
+```
+
+Each synthetic turn then also goes through the Collector, and the self-test
+reads both traces back from Tempo: stored, no span twice, and the same span IDs
+as the observations Langfuse holds (events travel on their span on this route,
+so they are left out of the comparison). The deletes cover Langfuse only; the
+copies in Tempo stay until its retention removes them. `verify <agent>
+<traceId> --tempo <URL>` does the same read for one real turn and reports a
+span stored twice as `DUPLICATED`.
+
 ## Check a new machine or operating system
 
 The shared runtime has no dependencies and runs TypeScript directly, so the

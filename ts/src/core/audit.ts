@@ -286,3 +286,20 @@ export async function readTraceObservations(client: LangfuseClient, api: 'v2' | 
   const { observations } = await readObservations(client, { traceId }, 5);
   return observations.map((span) => ({ id: span.id, type: span.type }));
 }
+
+/**
+ * Span IDs Tempo holds for a trace, as hex; `undefined` when it has no such
+ * trace. Tempo answers in OTLP JSON, with IDs in base64 unless asked otherwise.
+ */
+export async function readTempoSpanIds(tempo: string, traceId: string): Promise<string[] | undefined> {
+  const res = await fetch(new URL('/api/traces/' + traceId, tempo), { signal: AbortSignal.timeout(15000), redirect: 'error' });
+  if (res.status === 404) return undefined;
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const body = await res.json() as { batches?: any[]; resourceSpans?: any[]; trace?: { batches?: any[]; resourceSpans?: any[] } };
+  const batches = body.batches ?? body.resourceSpans ?? body.trace?.resourceSpans ?? body.trace?.batches ?? [];
+  const spans = batches.flatMap((batch) => (batch.scopeSpans ?? batch.instrumentationLibrarySpans ?? []).flatMap((scope: any) => scope.spans ?? []));
+  return spans.map((span: { spanId?: string }) => {
+    const id = String(span.spanId ?? '');
+    return /^[0-9a-f]{16}$/i.test(id) ? id.toLowerCase() : Buffer.from(id, 'base64').toString('hex');
+  });
+}
