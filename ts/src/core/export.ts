@@ -233,6 +233,14 @@ async function deliverOtlp(config: Config, destination: Destination, traceId: st
   // enough time has passed for ingestion to finish, read the trace, accept what
   // is there and release only what is missing. A relay cannot be read, so its
   // unconfirmed turns wait for an operator.
+  if (previous?.status === 'unconfirmed' && !previous.pending?.length && !Object.keys(previous.spans).length
+    && previous.lastError?.startsWith('Stored earlier through legacy ingestion')) {
+    // Written by a runtime that left such a turn as unconfirmed. It was read back from the project then.
+    for (const id of hashes.keys()) previous.spans[id] = VERIFIED;
+    previous.status = 'confirmed';
+    writeRecord(dir, previous);
+    return { traceId, status: 'skipped', sent: 0, message: previous.lastError };
+  }
   if (previous?.status === 'unconfirmed') {
     const age = Date.now() - Date.parse(previous.updatedAt);
     if (destination.kind !== 'langfuse-otlp' || !previous.pending?.length || !(age > config.reconcileAfterMs) || !config.reconcileAfterMs) {

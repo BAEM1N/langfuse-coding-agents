@@ -219,6 +219,9 @@ export interface HookResult {
   destinations?: DestinationResult[];
 }
 
+/** How long a Claude Stop hook waits for the final response to reach the transcript. */
+const STOP_WAIT_MS = 3000;
+
 export async function runHook(agent: AgentName, raw: Record<string, unknown>, logger?: Logger): Promise<HookResult> {
   const cfg = loadConfig(agent);
   const log = logger ?? createLogger(logPath(cfg), cfg.debug);
@@ -244,11 +247,18 @@ export async function runHook(agent: AgentName, raw: Record<string, unknown>, lo
     if (agent === 'claude' && event === 'Stop') {
       // The Stop event can arrive before the final model response reaches the transcript.
       const finalText = p.last_assistant_message?.trim();
-      const deadline = performance.now() + 750;
+      // Sending without it stores the turn short: the response follows on a later
+      // hook run, but the root span and the tools it answered were already
+      // accepted as they stood and cannot be updated. Claude Code has been seen
+      // to write that row more than a second after Stop, so wait for it; the
+      // loop ends as soon as the response is there.
+      const deadline = performance.now() + STOP_WAIT_MS;
       while (performance.now() < deadline) {
         const turn = parsed.turns.at(-1);
         const last = turn?.steps.at(-1);
-        if (last?.kind === 'generation' && last.usage && (!finalText || turn?.output === finalText)) break;
+        const stopReason = last?.kind === 'generation' ? last.metadata?.stopReason : undefined;
+        const answered = typeof stopReason === 'string' ? stopReason !== 'tool_use' : (!finalText || (typeof turn?.output === 'string' && turn.output.trim() === finalText));
+        if (last?.kind === 'generation' && last.usage && answered) break;
         await wait(75);
         parsed = parseTranscript(agent, transcript, sessionId, st, cfg.subagents);
       }

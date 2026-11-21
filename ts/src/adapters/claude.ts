@@ -249,7 +249,9 @@ export function parseClaudeTranscript(entries: JsonlEntry[], opts: ParseOptions)
     // Only conversation rows move the clock. Bookkeeping rows (file history,
     // attachments, away summaries) are written out of order or long afterwards,
     // and used to push a model call's start past its own end.
-    const conversation = v.type === 'user' || v.type === 'assistant' || (v.type === 'system' && v.subtype === 'turn_duration');
+    // Nor does the turn_duration row: it is written after the Stop hook has
+    // run, so letting it set the end would change a turn that was already sent.
+    const conversation = v.type === 'user' || v.type === 'assistant';
     if (ts && conversation && ts > cur.lastTime) cur.lastTime = ts;
   }
 

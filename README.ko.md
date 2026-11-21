@@ -155,7 +155,7 @@ Windows의 Antigravity는 노트북에 저장된 로그인과 훅 설정을 그�
 
 | 검사 | Windows 11 | macOS 26 (Apple Silicon) | Ubuntu 24.04 (x86_64, WSL) |
 | --- | :---: | :---: | :---: |
-| `npm test` (76개, 1개는 Collector 바이너리 필요) | ✅ | ✅ | ✅ |
+| `npm test` (77개, 1개는 Collector 바이너리 필요) | ✅ | ✅ | ✅ |
 | `selftest all`: 여섯 형식이 보낸 그대로 Langfuse에 저장, 서브에이전트는 턴 안과 별도 트레이스 양쪽 | ✅ | ✅ | ✅ |
 | `selftest all --relay --tempo`: Langfuse와 Tempo 3.1의 스팬 ID 일치, 중복 없음 | ✅ |  |  |
 

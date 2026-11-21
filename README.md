@@ -158,7 +158,7 @@ On **November 21, 2026**, after the move to OTLP delivery and sub-agent capture,
 
 | Check | Windows 11 | macOS 26 (Apple Silicon) | Ubuntu 24.04 (x86_64, WSL) |
 | --- | :---: | :---: | :---: |
-| `npm test` (76 tests, one needs a Collector binary) | ✅ | ✅ | ✅ |
+| `npm test` (77 tests, one needs a Collector binary) | ✅ | ✅ | ✅ |
 | `selftest all`: six formats stored in Langfuse as sent, sub-agent nested and as its own trace | ✅ | ✅ | ✅ |
 | `selftest all --relay --tempo`: same span IDs in Langfuse and Tempo 3.1, none twice | ✅ |  |  |
 

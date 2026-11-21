@@ -710,3 +710,25 @@ test('an unconfirmed turn is settled by reading Langfuse back once it is old eno
   assert.ok(!storedIds.includes(spansOf(posts[1])[0].spanId), 'nothing the server already held is sent again');
   assert.equal(listRecords(deliveryDir(loadConfig('claude')))[0].status, 'confirmed');
 });
+
+test('a Claude Stop that runs ahead of the final response waits for it, so the turn is sent once and whole', async (t) => {
+  const backend = await receiver(t);
+  const box = sandbox(t, langfuse(backend.url));
+  const rows = fixture('claude-transcript.jsonl');
+  // As Claude Code leaves it when Stop fires early: the tool result is there, the answer is not.
+  writeFileSync(box.transcript, rows.slice(0, 5).join('\n') + '\n');
+  const late = setTimeout(() => appendFileSync(box.transcript, rows.slice(5, 7).join('\n') + '\n'), 1200);
+  t.after(() => clearTimeout(late));
+  const first = await stop('claude', box.transcript);
+  assert.deepEqual(statuses(first, 'langfuse-otlp'), ['delivered']);
+  const sent = backend.requests.filter(request => request.path === '/api/public/otel/v1/traces').flatMap(spansOf);
+  assert.ok(sent.some(span => attr(span, 'langfuse.observation.type') === 'generation' && JSON.stringify(span).includes('end_turn')),
+    'the final model call went out with the rest of the turn');
+
+  // The row Claude Code writes after the hook must not change what was sent.
+  appendFileSync(box.transcript, rows[7] + '\n');
+  const again = await runHook('claude', { hook_event_name: 'Notification', session_id: 'synthetic-session', transcript_path: box.transcript, message: 'waiting' });
+  assert.equal(again.errors ?? 0, 0);
+  const records = listRecords(join(box.env.CLAUDE_CONFIG_DIR, 'state', 'delivery'));
+  assert.deepEqual(records.map(record => record.lateChanges?.length ?? 0), [0], 'nothing changed after delivery');
+});
