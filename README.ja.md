@@ -46,6 +46,8 @@ sh scripts/setup.sh --agents claude,codex
 
 表示名の入力欄で Enter のみを押すと、ホームフォルダー名が使われます。`--name` で表示名、`--device` で端末ラベル、`--environment` で `local` や `ci` などの環境名を指定できます。インストール後はエージェントを再起動し、Codex では `/hooks` で追加したフックを確認してください。
 
+保存まで確認するには `node ts/src/cli.ts selftest all` を実行します。サブエージェントを含む合成ターンを各エージェントの形式で送信し、読み戻して照合したあと削除します。`--relay <Collector の受信 URL> --tempo <Tempo のクエリ URL>` を付けると、Tempo 側のコピーも同じスパン ID で保存されているか照合します。応答が失われて `unconfirmed` になったターンは、Langfuse へ直接送る経路では 15 分後（`LANGFUSE_HOOK_RECONCILE_MINUTES`）にフックがトレースを読み戻し、足りないスパンだけを送ります。2026 年 11 月 21 日に Windows 11、macOS 26、Ubuntu 24.04 で 6 形式すべてを確認しました。
+
 [Deep Agents SDK](tools/deepagents/) には Python コールバックを追加します。[Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) はネイティブ OTLP エクスポーターを使用します。従来の [Gemini CLI フック](tools/gemini-cli/) と [oh-my-codex ブリッジ](tools/oh-my-codex/) も利用できます。
 
 ### Grafana Tempo への送信を追加

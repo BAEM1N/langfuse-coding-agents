@@ -46,6 +46,8 @@ sh scripts/setup.sh --agents claude,codex
 
 提示输入显示名称时，直接按 Enter 将使用用户主目录的名称。可通过 `--name` 设置显示名称，通过 `--device` 设置设备标签，通过 `--environment` 设置 `local` 或 `ci` 等环境。安装后重新启动代理。在 Codex 中，使用 `/hooks` 审查新注册的钩子。
 
+要确认数据确实已保存，运行 `node ts/src/cli.ts selftest all`。它按每种代理的格式发送一个带子代理的合成回合，读回并比对，然后删除。加上 `--relay <Collector 接收 URL> --tempo <Tempo 查询 URL>`，还会比对 Tempo 中的副本是否保存了相同的 span ID。因响应丢失而标记为 `unconfirmed` 的回合，在直接发送到 Langfuse 的路径上会在 15 分钟后（`LANGFUSE_HOOK_RECONCILE_MINUTES`）由钩子读回链路，只补发缺少的 span。2026 年 11 月 21 日已在 Windows 11、macOS 26 和 Ubuntu 24.04 上验证全部六种格式。
+
 [Deep Agents SDK](tools/deepagents/) 使用 Python 回调。[Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) 使用原生 OTLP 导出器。仓库也提供 [Gemini CLI 兼容钩子](tools/gemini-cli/) 和 [oh-my-codex 桥接](tools/oh-my-codex/)。
 
 ### 接入 Grafana Tempo

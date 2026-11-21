@@ -2,7 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![langfuse ≥4.0](https://img.shields.io/badge/langfuse-%E2%89%A54.0-7c3aed.svg)](https://github.com/langfuse/langfuse-python)
+[![Node.js 22.18+](https://img.shields.io/badge/node-22.18+-339933.svg)](https://nodejs.org/)
+[![langfuse ≥4.7](https://img.shields.io/badge/langfuse-%E2%89%A54.7-7c3aed.svg)](https://github.com/langfuse/langfuse-python)
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
@@ -94,6 +95,7 @@ sh scripts/setup.sh --agents claude,codex
 
 ```sh
 node ts/src/cli.ts selftest all                      # 에이전트별 형식의 합성 턴(서브에이전트 포함)을 보내고, 조회해 대조한 뒤 삭제
+node ts/src/cli.ts selftest all --relay http://127.0.0.1:14318/v1/traces --tempo http://127.0.0.1:13200   # 같은 검사에 Tempo 쪽 복사본 대조 추가
 node ts/src/cli.ts doctor claude                     # 설정, 목적지, 최근 24시간 전송 결과
 node ts/src/cli.ts delivery claude                   # 실패·부분 전송·미확인 턴
 node ts/src/cli.ts verify claude <traceId>           # Langfuse에서 트레이스를 다시 조회
@@ -102,7 +104,7 @@ node ts/src/cli.ts coverage claude --since 2026-11-20T00:00:00Z   # 로컬 트�
 node ts/src/cli.ts audit-langfuse claude --limit 10  # 조회 API는 자동 감지, --api v2|legacy로 강제
 ```
 
-`doctor`의 인증 성공이나 훅 로그의 접수 기록만으로는 트레이스가 저장됐다고 볼 수 없습니다. `verify`가 백엔드에서 트레이스를 읽어 보낸 내용과 비교합니다. `unconfirmed`로 표시된 턴(타임아웃, 응답 유실, 부분 거부)은 자동으로 다시 보내지 않습니다. `verify`로 확인한 뒤 `verify claude <traceId> --reconcile`을 실행하면 저장된 스팬은 확정하고 없는 스팬만 다시 보냅니다. `coverage`는 기간 내 로컬 턴 전체를 프로젝트와 대조해 누락된 턴, 덜 저장된 턴, 비용이 없는 모델 호출을 알려줍니다.
+`doctor`의 인증 성공이나 훅 로그의 접수 기록만으로는 트레이스가 저장됐다고 볼 수 없습니다. `verify`가 백엔드에서 트레이스를 읽어 보낸 내용과 비교합니다. `unconfirmed`로 표시된 턴(타임아웃, 응답 유실, 부분 거부)은 확인 없이 다시 보내지 않습니다. Langfuse로 직접 보내는 경로에서는 훅이 스스로 정리합니다. 15분이 지나면(`LANGFUSE_HOOK_RECONCILE_MINUTES`, `0`이면 끔) 다음 훅 실행 때 트레이스를 조회해 저장된 스팬은 확정하고 없는 스팬만 보냅니다. Collector는 조회할 수 없으므로 그쪽의 미확인 턴은 `verify claude <traceId> --reconcile`을 실행할 때까지 대기합니다. `--tempo`를 주면 `verify`가 Tempo에서도 트레이스를 읽고, 같은 스팬이 두 번 저장됐으면 `DUPLICATED`로 알립니다. `coverage`는 기간 내 로컬 턴 전체를 프로젝트와 대조해 누락된 턴, 덜 저장된 턴, 비용이 없는 모델 호출을 알려줍니다.
 
 Codex 설정에 프로젝트 키가 있다면 위 명령에서 `claude`를 `codex`로 바꾸세요. [Deep Agents SDK](tools/deepagents/)와 [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector)는 각각 콜백과 네이티브 OTLP를 사용합니다.
 
@@ -149,6 +151,16 @@ Grafana 계정으로 로그인하세요. 로컬에서 로그인 없이 읽기 �
 
 Windows의 Antigravity는 노트북에 저장된 로그인과 훅 설정을 그대로 사용했습니다. Deep Agents는 SDK 콜백으로, Goose는 네이티브 Collector 릴레이로 검증했습니다. [상세 실측 기록](docs/agent-observability-status.ko.md)
 
+**2026년 11월 21일**, OTLP 전송과 서브에이전트 수집으로 바꾼 뒤 셀프 호스팅 Langfuse 4.76 프로젝트를 상대로 셀프테스트를 실행했습니다. 형식마다 서브에이전트가 포함된 합성 턴을 보내고, 두 트레이스를 조회해 대조한 뒤 삭제합니다.
+
+| 검사 | Windows 11 | macOS 26 (Apple Silicon) | Ubuntu 24.04 (x86_64, WSL) |
+| --- | :---: | :---: | :---: |
+| `npm test` (76개, 1개는 Collector 바이너리 필요) | ✅ | ✅ | ✅ |
+| `selftest all`: 여섯 형식이 보낸 그대로 Langfuse에 저장, 서브에이전트는 턴 안과 별도 트레이스 양쪽 | ✅ | ✅ | ✅ |
+| `selftest all --relay --tempo`: Langfuse와 Tempo 3.1의 스팬 ID 일치, 중복 없음 | ✅ |  |  |
+
+macOS와 Ubuntu는 테스트가 75개이던 시점에 실행했습니다. Tempo 대조는 core 배포판 0.165에서 예제 Collector 설정으로 진행했습니다.
+
 ## 지원 에이전트
 
 Gemini CLI 개인·무료·Google AI Pro/Ultra 계정은 Antigravity CLI로 이전됐습니다.
@@ -192,6 +204,26 @@ Python 경로의 Langfuse SDK 요구사항은 [SDK 호환성](#sdk-호환성)을
 
 ## 아키텍처
 
+설치 스크립트가 Claude Code, Codex, Oh My Pi, Antigravity, Copilot CLI, OpenCode 턴에 쓰는 것은 공용 파이프라인(`ts/`, Node.js, 의존성 없음)입니다.
+
+```
+에이전트 훅 · 확장 · 플러그인
+        │  트랜스크립트 경로 / 턴
+        ▼
+어댑터 (ts/src/adapters)       에이전트별 트랜스크립트 형식을 읽음
+        │  턴, 모델 호출, 도구, 서브에이전트 실행
+        ▼
+코어 (ts/src/core)             턴마다 트레이스 하나, 서브에이전트는 턴 안과 별도 트레이스
+        │  OTLP/HTTP JSON, 끝난 턴마다 한 번
+        ├──────────────► Langfuse  /api/public/otel/v1/traces
+        └──────────────► OTLP 수신기(Collector) ──► Tempo, Jaeger 등
+        │
+        ▼
+<에이전트 홈>/state/delivery   목적지별·트레이스별 접수 기록
+```
+
+전송 기록은 같은 턴이 두 번 저장되지 않게 하고, `doctor`, `delivery`, `verify`, `coverage`가 읽는 근거입니다. `tools/` 아래의 단독 Python 어댑터는 아래의 Langfuse SDK 파이프라인을 씁니다.
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Host 에이전트 (Claude Code / Codex / oh-my-codex /      │
@@ -233,8 +265,12 @@ v0.2 에서 공통 파이프라인을 `core/langfuse_hook_core.py` 로 추출할
 
 | 컴포넌트 | 최소 | 권장 |
 |----------|------|------|
-| Python | 3.8 | 3.10+ |
-| Langfuse Python SDK | 3.0 | **4.0+** (4.6.x 검증) |
+| Node.js (공용 런타임) | 22.18 | 최신 LTS |
+| Langfuse 서버 | 셀프 호스팅 3.22 (OTLP 엔드포인트가 처음 들어간 버전) | Langfuse Cloud 또는 셀프 호스팅 4.x |
+| Python (단독 통합) | 3.8 | 3.10+ |
+| Langfuse Python SDK | 4.7 (OTLP로 전송) | **5.x** (4.18, 5.2 검증) |
+| OpenTelemetry Collector (선택) | core 0.164 또는 contrib | core 0.165 검증 |
+| Grafana Tempo (선택) | — | 3.1 검증 |
 | OS | macOS / Linux / Windows | — |
 
 에이전트별 요구사항:
@@ -290,6 +326,10 @@ Langfuse 4.0 에서 원본 hook 이 의존하던 두 API 가 제거됨:
 
 흔한 증상과 조치는 [`AGENTS.md`](AGENTS.md) 하단 *Common failure modes* 표에 정리되어 있습니다. 핵심:
 
+- **Langfuse에 턴이 없음** → `node ts/src/cli.ts delivery <agent>`가 실패했거나 미확인인 턴과 사유를 보여 줍니다. `coverage <agent> --since <시각>`은 로컬 턴 전체를 프로젝트와 대조합니다.
+- **`doctor`가 레거시 인제스천을 경고함** → 설정에 `LANGFUSE_HOOK_TRANSPORT=legacy`가 남아 있습니다. 서버가 3.22보다 오래되지 않았다면 지우세요.
+- **Langfuse에는 있는데 Tempo에는 없음** → Collector는 백엔드보다 먼저 요청을 접수합니다. `selftest all --relay <수신기 URL> --tempo <조회 URL>`을 실행하고, Collector를 띄울 때 지정한 Tempo 수신 URL에 실제로 떠 있는 프로세스가 있는지 확인하세요.
+- **모델 호출 비용이 0** → Langfuse 프로젝트에 그 모델 이름의 가격 정의가 없습니다. 프로젝트 설정에서 모델 정의를 추가하세요. 토큰 수는 그와 무관하게 전송됩니다.
 - **Hook log 는 `Processed in X.Xs` 인데 Langfuse 에 trace 가 없음** → SDK 4.x AttributeError 가 silent 하게 삼켜진 경우. Hook 파일이 `start_as_current_observation` 과 `_Langfuse_class_for_compat` shim 을 포함하는지 확인하고 없으면 이 repo 에서 다시 동기화.
 - **Trace 는 도착하는데 `userId` / `sessionId` / `tags` 가 비어있음** → 위와 같은 원인.
 - **tool 별 `userId` 가 분리되지 않음 (전부 `BAEM1N` 등)** → shell 의 `LANGFUSE_USER_ID` 가 tool 의 `.env` 를 가림. `unset` 하거나 tool 별로 override.

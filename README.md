@@ -2,7 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![langfuse ≥4.0](https://img.shields.io/badge/langfuse-%E2%89%A54.0-7c3aed.svg)](https://github.com/langfuse/langfuse-python)
+[![Node.js 22.18+](https://img.shields.io/badge/node-22.18+-339933.svg)](https://nodejs.org/)
+[![langfuse ≥4.7](https://img.shields.io/badge/langfuse-%E2%89%A54.7-7c3aed.svg)](https://github.com/langfuse/langfuse-python)
 
 [English](README.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
@@ -97,6 +98,7 @@ In a test directory, create `probe.txt` with a unique marker and ask the agent t
 
 ```sh
 node ts/src/cli.ts selftest all                      # synthetic turn with a sub-agent in each agent's format: send, read back, compare, delete
+node ts/src/cli.ts selftest all --relay http://127.0.0.1:14318/v1/traces --tempo http://127.0.0.1:13200   # the same, and compare the Tempo copy
 node ts/src/cli.ts doctor claude                     # settings, destinations, last 24h of delivery results
 node ts/src/cli.ts delivery claude                   # turns that are failed, partial or unconfirmed
 node ts/src/cli.ts verify claude <traceId>           # read the trace back from Langfuse
@@ -105,7 +107,7 @@ node ts/src/cli.ts coverage claude --since 2026-11-20T00:00:00Z   # local transc
 node ts/src/cli.ts audit-langfuse claude --limit 10  # read API is detected; force with --api v2|legacy
 ```
 
-`doctor` reporting valid keys, or a hook logging that a request was accepted, does not show that a trace is stored. `verify` does: it reads the trace from the backend and compares it with what was sent. A turn listed as `unconfirmed` (timeout, lost response, or a partial rejection) is not sent again automatically; check it with `verify`, then `verify claude <traceId> --reconcile` to accept what is stored and resend only what is missing. `coverage` compares every local turn in a period with the project and lists turns that are missing, stored short, or have model calls without a cost.
+`doctor` reporting valid keys, or a hook logging that a request was accepted, does not show that a trace is stored. `verify` does: it reads the trace from the backend and compares it with what was sent. A turn listed as `unconfirmed` (timeout, lost response, or a partial rejection) is never resent blind. On the direct Langfuse route the hook settles it by itself: after 15 minutes (`LANGFUSE_HOOK_RECONCILE_MINUTES`, `0` to turn off) the next hook run reads the trace back, accepts what is stored and sends only what is missing. A Collector cannot be read back, so its unconfirmed turns wait for `verify claude <traceId> --reconcile`. With `--tempo`, `verify` also reads the trace from Tempo and reports a span stored twice as `DUPLICATED`. `coverage` compares every local turn in a period with the project and lists turns that are missing, stored short, or have model calls without a cost.
 
 Use `codex` in those diagnostic commands if its configuration holds the project keys. See the [platform setup guide](docs/setup-agent-observability.md) for [Deep Agents SDK](tools/deepagents/) and [Goose](docs/agent-observability.md#goose-to-langfuse-through-an-opentelemetry-collector) setup.
 
@@ -151,6 +153,16 @@ On **November 19, 2026**, each ✅ marks a real file-read run whose prompt, tool
 | Goose | ✅ |  |  |
 
 Windows Antigravity was checked with the laptop’s existing login and hooks. Deep Agents used the SDK callback, and Goose used the native Collector relay. [Verification details](docs/agent-observability.md)
+
+On **November 21, 2026**, after the move to OTLP delivery and sub-agent capture, the self-test was run against a self-hosted Langfuse 4.76 project. It sends a synthetic turn with a sub-agent in each format, reads both traces back, compares them and deletes them.
+
+| Check | Windows 11 | macOS 26 (Apple Silicon) | Ubuntu 24.04 (x86_64, WSL) |
+| --- | :---: | :---: | :---: |
+| `npm test` (76 tests, one needs a Collector binary) | ✅ | ✅ | ✅ |
+| `selftest all`: six formats stored in Langfuse as sent, sub-agent nested and as its own trace | ✅ | ✅ | ✅ |
+| `selftest all --relay --tempo`: same span IDs in Langfuse and Tempo 3.1, none twice | ✅ |  |  |
+
+The macOS and Ubuntu runs used the test suite as it stood at 75 tests. The Tempo comparison went through the example Collector configuration on the core distribution 0.165.
 
 ## Supported AI coding agents
 
@@ -214,10 +226,25 @@ The shared installer accepts multiple agents and reuses a common exporter config
 
 ## Architecture
 
-The shared pipeline combines native hooks or a transcript/extension with turn
-reconstruction, token usage, and tool-call correlation. It sends spans to Langfuse
-or an OTLP/HTTP JSON receiver. The standalone Python adapters use their legacy
-Langfuse pipeline below.
+The shared pipeline (`ts/`, Node.js, no dependencies) is what the setup script installs for Claude Code, Codex, Oh My Pi, Antigravity, Copilot CLI and OpenCode turns.
+
+```
+agent hook, extension or plugin
+        │  transcript path / turn
+        ▼
+adapter (ts/src/adapters)      reads the agent's own transcript format
+        │  turns, model calls, tools, sub-agent runs
+        ▼
+core (ts/src/core)             one trace per turn, sub-agents nested and as their own trace
+        │  OTLP/HTTP JSON, once per finished turn
+        ├──────────────► Langfuse  /api/public/otel/v1/traces
+        └──────────────► OTLP receiver (Collector) ──► Tempo, Jaeger, ...
+        │
+        ▼
+<agent home>/state/delivery    what each destination accepted, per trace
+```
+
+Delivery records are what keep a turn from being stored twice and what `doctor`, `delivery`, `verify` and `coverage` read. The standalone Python adapters under `tools/` use the Langfuse SDK pipeline below.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -260,8 +287,12 @@ For per-event mapping across agents, see [`docs/hook-event-matrix.md`](docs/hook
 
 | Component | Minimum | Recommended |
 |-----------|---------|-------------|
-| Python | 3.8 | 3.10+ |
-| Langfuse Python SDK | 3.0 | **4.0+** (4.6.x tested) |
+| Node.js (shared runtime) | 22.18 | current LTS |
+| Langfuse server | self-hosted 3.22 (first with the OTLP endpoint) | Langfuse Cloud or self-hosted 4.x |
+| Python (standalone integrations) | 3.8 | 3.10+ |
+| Langfuse Python SDK | 4.7 (sends over OTLP) | **5.x** (4.18 and 5.2 tested) |
+| OpenTelemetry Collector (optional) | core 0.164 or contrib | core 0.165 tested |
+| Grafana Tempo (optional) | — | 3.1 tested |
 | OS | macOS / Linux / Windows | — |
 
 Agent-specific requirements:
@@ -326,7 +357,7 @@ Recommendations:
 - **Self-host Langfuse** if conversations may include proprietary code, internal URLs, secrets, or PII. The cloud `https://cloud.langfuse.com` is convenient but external.
 - **Treat `.env` files as secrets** — installers write them with restrictive permissions; don't commit them.
 - **`TRACE_TO_LANGFUSE=true` enables the Langfuse exporter.** The shared OTLP exporter uses its own endpoint and enable settings.
-- **Fail-open by design**: a hook crash never blocks the host agent. The trade-off is that silent SDK errors can drop traces — check `~/.<tool>/state/langfuse_hook.log` to confirm delivery.
+- **Fail-open by design**: a hook crash never blocks the host agent. The trade-off is that silent SDK errors can drop traces — check `~/.<tool>/state/langfuse_hook.log` (Python integrations) or `node ts/src/cli.ts delivery <agent>` (shared runtime) to confirm delivery.
 
 Trace destinations come from the configured Langfuse and OTLP endpoints. The hooks never auto-update themselves and never invoke a system package manager.
 
@@ -336,6 +367,10 @@ Trace destinations come from the configured Langfuse and OTLP endpoints. The hoo
 
 Common symptoms and fixes are catalogued in the *Common failure modes* table at the bottom of [`AGENTS.md`](AGENTS.md). Highlights:
 
+- **A turn is missing in Langfuse** → `node ts/src/cli.ts delivery <agent>` lists turns that failed or are unconfirmed, with the reason; `coverage <agent> --since <time>` compares every local turn with the project.
+- **`doctor` warns about legacy ingestion** → the install still has `LANGFUSE_HOOK_TRANSPORT=legacy`. Remove it unless the server is older than 3.22.
+- **Traces reach Langfuse but not Tempo** → the Collector accepts a request before its backends do. Run `selftest all --relay <receiver URL> --tempo <query URL>`, and check that something listens on the Tempo ingest URL the Collector was started with.
+- **Cost is 0 on model calls** → the Langfuse project has no price for that model name. Add a model definition in the project settings; token counts are sent either way.
 - **Hook log says `Processed in X.Xs` but no trace in Langfuse** → SDK 4.x AttributeError swallowed. Confirm hook contains `start_as_current_observation` and the `_Langfuse_class_for_compat` shim; re-sync from this repo if not.
 - **Traces arrive without `userId` / `sessionId` / `tags`** → same root cause; same fix.
 - **Per-tool `userId` not isolated (e.g. all show `BAEM1N`)** → shell env `LANGFUSE_USER_ID` shadows the tool's `.env`. `unset` it or override per-tool.
