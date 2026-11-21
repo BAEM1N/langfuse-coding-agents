@@ -614,8 +614,12 @@ test('a home that used legacy ingestion does not resend an earlier turn over OTL
   const rows = fixture('claude-transcript.jsonl');
   writeFileSync(box.transcript, rows.slice(0, 8).join('\n') + '\n');
   const first = await stop('claude', box.transcript);
-  assert.deepEqual(statuses(first, 'langfuse-otlp'), ['held']);
+  assert.deepEqual(statuses(first, 'langfuse-otlp'), ['skipped']);
   assert.equal(posts.length, 0, 'the turn legacy ingestion stored is not sent a second time');
+  const settled = listRecords(join(state, 'delivery')).filter(record => record.destination.startsWith('langfuse-otlp'));
+  assert.deepEqual(settled.map(record => record.status), ['confirmed'], 'read back from the project, so not left as a delivery to chase');
+  await stop('claude', box.transcript);
+  assert.equal(posts.length, 0, 'and a later run still does not send it');
   assert.equal(first.errors, 0, 'and that is not an error');
 
   // A turn that starts after the change is sent normally, with no read first.

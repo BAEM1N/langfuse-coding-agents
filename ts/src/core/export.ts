@@ -201,9 +201,13 @@ async function storedBeforeOtlp(config: Config, destination: Destination, traceI
   const record = baseRecord(undefined, traceId, destination.id, events);
   record.updatedAt = new Date().toISOString();
   if (!present.length) {
-    Object.assign(record, { status: 'unconfirmed', lastError: 'Stored earlier through legacy ingestion; not sent again over OTLP' });
+    // The project holds this turn, read back just now: that is settled, not a
+    // delivery to chase. Marked as verified so it is neither resent nor listed
+    // as a problem; anything the turn gains later is still sent.
+    for (const event of observations) record.spans[String(event.body.id)] = VERIFIED;
+    Object.assign(record, { status: 'confirmed', lastError: 'Stored earlier through legacy ingestion; not sent again over OTLP' });
     writeRecord(dir, record);
-    return { traceId, status: 'held', sent: 0, message: record.lastError };
+    return { traceId, status: 'skipped', sent: 0, message: record.lastError };
   }
   for (const event of present) record.spans[String(event.body.id)] = hashes.get(String(event.body.id))!;
   const complete = present.length === observations.length;
